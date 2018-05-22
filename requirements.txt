@@ -1,0 +1,6 @@
+attrs
+keyring
+mistune
+pycairo
+pygobject
+zulip

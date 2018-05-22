@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='utf-8'?>
+
+<schemalist>
+  <schema path='/com/refi64/azul/' id='com.refi64.azul'>
+    <key name='accounts' type='a(sss)'>
+      <default>[]</default>
+      <summary>The installed accounts</summary>
+    </key>
+  </schema>
+</schemalist>
