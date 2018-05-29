@@ -597,9 +597,10 @@ class EmptyListView(Gtk.ListBox):
         pass
 
 
-class StreamsView(Gtk.Bin):
+class StreamsView(Gtk.ScrolledWindow):
     def __init__(self, bus, account, streams, **kwargs):
-        super(StreamsView, self).__init__(**kwargs)
+        super(StreamsView, self).__init__(hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                          **kwargs)
         self.bus = bus
         self.account = account
         self.streams = streams
@@ -751,14 +752,13 @@ class MarkdownView(Gtk.Label):
                 return f'<span face="monospace">{escaped}</span>'
 
         def block_quote(self, text):
-            markdown = mistune.Markdown(renderer=self)
-            return f'<span color="#616161">{markdown(text)}</span>\n'
+            return f'<span color="#616161">{text}</span>'
 
         def block_html(self, html):
             return GLib.markup_escape_text(html)
 
         def header(self, text, level, raw=None):
-            return f'<span size="large" weight="bold">{text}</span>'
+            return self.paragraph('#' * level + text)
 
         def hrule(self):
             return ''
@@ -805,7 +805,7 @@ class MarkdownView(Gtk.Label):
 
         def link(self, link, title, content):
             escaped = link.replace('\\', '\\\\').replace('"', '\"')
-            return f'<a href="{escaped}">{content}</a>'
+            return f'<a href="{GLib.markup_escape_text(link)}">{content}</a>'
 
         def strikethrough(self, text):
             return f'<s>{text}</s>'
@@ -820,8 +820,7 @@ class MarkdownView(Gtk.Label):
     markdown = mistune.Markdown(renderer=renderer)
 
     def __init__(self, account, content, **kwargs):
-        super(MarkdownView, self).__init__(selectable=True, track_visited_links=False,
-                                           **kwargs)
+        super(MarkdownView, self).__init__(track_visited_links=False, **kwargs)
         self.account = account
 
         markup = self.markdown(content)
@@ -867,7 +866,7 @@ class MessagesFromSenderView(Gtk.Grid):
 
         view = MarkdownView(account,
                             '\n'.join(message.content for message in messages),
-                            wrap=True)
+                            selectable=True, wrap=True)
         self.attach(view, 1, 1, 1, 1)
 
 
@@ -1087,7 +1086,7 @@ class Window(Gtk.ApplicationWindow):
             Gdk.Screen.get_default(), style_provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
-        self.set_default_size(1280, 740)
+        self.set_default_size(1400, 800)
 
         self.bus.connect('account-streams-loading',
                          ignore_first(self.on_account_streams_loading))
