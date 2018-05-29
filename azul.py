@@ -24,7 +24,8 @@ import queue
 import requests
 import sys
 import threading
-import webbrowser
+import traceback
+import urllib.parse
 import zulip
 
 
@@ -169,20 +170,6 @@ class MessageModel:
         return construct_with_mapped_args(MessageModel, data)
 
 
-@attr.s
-class SearchNarrow:
-    stream = attr.ib(default=None)
-    topic = attr.ib(default=None)
-
-    def to_data(self):
-        result = []
-        if self.stream is not None:
-            result.append({'operator': 'stream', 'operand': self.stream.name})
-        if self.topic is not None:
-            result.append({'operator': 'topic', 'operand': self.topic.name})
-        return result
-
-
 class Task: pass
 
 
@@ -262,17 +249,22 @@ class LoadMessagesTask(Task):
     anchor = attr.ib(default=0)
 
     def process(self, bus):
-        narrow = self.narrow.to_data()
+        narrow = [{'operator': k, 'operand': v} for k, v in self.narrow.items()]
+
         result = self.account.client.call_endpoint(url='messages', method='GET',
                                                    request={'anchor': self.anchor,
                                                             'num_before': 0,
                                                             'num_after': 100,
                                                             'narrow': narrow,
                                                             'apply_markdown': False})
-        messages = list(map(MessageModel.from_data, result['messages']))
+        if result.get('code') == 'BAD_NARROW':
+            bus.emit_from_main_thread('message-narrow-failed', self.account,
+                                      self.narrow, result['desc'])
+        else:
+            messages = list(map(MessageModel.from_data, result['messages']))
 
-        bus.emit_from_main_thread('messages-loaded', self.account, self.narrow,
-                                  self.anchor, messages)
+            bus.emit_from_main_thread('messages-loaded', self.account, self.narrow,
+                                      self.anchor, messages)
 
 
 class TaskThread(threading.Thread):
@@ -292,6 +284,8 @@ class TaskThread(threading.Thread):
 
             try:
                 task.process(self.bus)
+            except:
+                traceback.print_exc()
             finally:
                 self._tasks.task_done()
 
@@ -400,7 +394,7 @@ class EventBus(GObject.Object):
         self._thread.add_task(LoadStreamsTask(account))
 
     def load_messages(self, account, narrow=None):
-        self._thread.add_task(LoadMessagesTask(account, narrow or SearchNarrow()))
+        self._thread.add_task(LoadMessagesTask(account, narrow or {}))
 
     def load_topics_in_stream(self, account, stream):
         self._thread.add_task(LoadTopicsTask(account, stream))
@@ -433,8 +427,14 @@ class EventBus(GObject.Object):
     @GObject.Signal(name='messages-loaded', arg_types=(object, object, object, object))
     def messages_loaded(self, account, narrow, anchor, messages): pass
 
-    @GObject.Signal(name='ui-stream-selected', arg_types=(object,))
-    def ui_stream_selected(self, stream): pass
+    @GObject.Signal(name='message-narrow-failed', arg_types=(object, object, object))
+    def message_narrow_failed(self, account, narrow, error): pass
+
+    @GObject.Signal(name='ui-account-selected', arg_types=(object,))
+    def ui_account_selected(self, account): pass
+
+    @GObject.Signal(name='ui-stream-selected', arg_types=(object, object,))
+    def ui_stream_selected(self, account, stream): pass
 
     @GObject.Signal(name='ui-add-account', arg_types=(object,))
     def ui_add_account(self, account): pass
@@ -555,6 +555,7 @@ class AccountsView(Gtk.ListBox):
         self.remove(widget.get_parent())
 
         image = CircularImage(self.REALM_ICON_SIZE, account.info.icon)
+        image.set_tooltip_text(account.info.name)
         self.insert(image, account.index)
 
         self.show_all()
@@ -565,6 +566,7 @@ class AccountsView(Gtk.ListBox):
         index = row.get_index()
         account = self.bus.accounts[index]
         assert account.index == index
+        self.bus.emit('ui-account-selected', account)
 
         self.bus.load_streams_for_account(account)
 
@@ -590,6 +592,9 @@ class EmptyListView(Gtk.ListBox):
         spinner.start()
         spinner.show()
         self.set_placeholder(spinner)
+
+    def clear_selection(self):
+        pass
 
 
 class StreamsView(Gtk.Bin):
@@ -626,6 +631,7 @@ class StreamsView(Gtk.Bin):
     def on_stream_selected(self):
         _, it = self.tree.get_selection().get_selected()
         if it is None:
+            self.bus.load_messages(self.account)
             return
 
         path = self.store.get_path(it).get_indices()
@@ -633,8 +639,12 @@ class StreamsView(Gtk.Bin):
         topic = self.stream_topics[stream.name][self.store[path][0]] if len(path) == 2 \
                                                                      else None
 
-        self.bus.emit('ui-stream-selected', stream)
-        self.bus.load_messages(self.account, SearchNarrow(stream=stream, topic=topic))
+        self.bus.emit('ui-stream-selected', self.account, stream)
+
+        narrow = {'stream': stream.name}
+        if topic is not None:
+            narrow['topic'] = topic.name
+        self.bus.load_messages(self.account, narrow)
 
     def on_stream_topics_loaded(self, account, stream, topics):
         if account is not self.account:
@@ -643,6 +653,9 @@ class StreamsView(Gtk.Bin):
         for topic in topics:
             self.stream_topics[stream.name][topic.name] = topic
             self.store.append(self.stream_iters[stream.name], [topic.name])
+
+    def clear_selection(self):
+        self.tree.get_selection().unselect_all()
 
 
 class AvatarView(Gtk.Bin):
@@ -681,7 +694,7 @@ class AvatarView(Gtk.Bin):
         self.add(self.image)
 
 
-class MarkdownView(Gtk.Grid):
+class MarkdownView(Gtk.Label):
     class PangoFormatter(pygments.formatter.Formatter):
         def __init__(self, **kw):
             super(MarkdownView.PangoFormatter, self).__init__(**kw)
@@ -717,6 +730,9 @@ class MarkdownView(Gtk.Grid):
         # Block level.
 
         def block_code(self, code, language=None):
+            if language == 'quote':
+                return self.block_quote(code)
+
             highlighted = None
 
             if language is not None:
@@ -735,7 +751,8 @@ class MarkdownView(Gtk.Grid):
                 return f'<span face="monospace">{escaped}</span>'
 
         def block_quote(self, text):
-            return text
+            markdown = mistune.Markdown(renderer=self)
+            return f'<span color="#616161">{markdown(text)}</span>\n'
 
         def block_html(self, html):
             return GLib.markup_escape_text(html)
@@ -802,18 +819,30 @@ class MarkdownView(Gtk.Grid):
     renderer = PangoRenderer()
     markdown = mistune.Markdown(renderer=renderer)
 
-    def __init__(self, content, **kwargs):
-        super(MarkdownView, self).__init__(**kwargs)
+    def __init__(self, account, content, **kwargs):
+        super(MarkdownView, self).__init__(selectable=True, track_visited_links=False,
+                                           **kwargs)
+        self.account = account
 
         markup = self.markdown(content)
-        label = Gtk.Label(selectable=True, wrap=True)
-        label.set_markup(markup)
-        self.attach(label, 0, 0, 1, 1)
+        if self.get_single_line_mode():
+            markup = markup.replace('\n', '')
+        self.set_markup(markup)
+
+        self.connect('activate-link', ignore_first(self.activate_link))
 
         self.show_all()
 
-    def activate_link(self, uri):
-        print(uri)
+    def activate_link(self, url):
+        url = urllib.parse.urljoin(self.account.server, url)
+        scheme = urllib.parse.urlparse(url).scheme
+        if not scheme:
+            appinfo = Gio.AppInfo.get_default_for_type('x-scheme-handler/http', True)
+        else:
+            appinfo = Gio.AppInfo.get_default_for_uri_scheme(scheme)
+
+        if appinfo is not None:
+            appinfo.launch_uris([url], None)
         return True
 
 
@@ -836,7 +865,9 @@ class MessagesFromSenderView(Gtk.Grid):
         name.set_markup(f'<b>{GLib.markup_escape_text(first.sender_name)}</b>')
         self.attach(name, 1, 0, 1, 1)
 
-        view = MarkdownView('\n'.join(message.content for message in messages))
+        view = MarkdownView(account,
+                            '\n'.join(message.content for message in messages),
+                            wrap=True)
         self.attach(view, 1, 1, 1, 1)
 
 
@@ -913,7 +944,8 @@ class HeaderBar(Gtk.Grid):
         self.bus = bus
         self.parent = parent
 
-        self.bus.connect('account-info-loaded', ignore_first(self.on_account_loaded))
+        self.bus.connect('message-narrow-failed', ignore_first(self.on_narrow_failure))
+        self.bus.connect('ui-account-selected', ignore_first(self.on_account_selected))
         self.bus.connect('ui-stream-selected', ignore_first(self.on_stream_selected))
 
         self.left_header = Gtk.HeaderBar()
@@ -922,10 +954,17 @@ class HeaderBar(Gtk.Grid):
 
         add_button = Gtk.Button(image=Gtk.Image.new_from_icon_name('list-add-symbolic',
                                                                    Gtk.IconSize.BUTTON))
-        add_button.set_size_request(AccountsView.REALM_ICON_SIZE,
-                                    AccountsView.REALM_ICON_SIZE)
         add_button.connect('clicked', ignore_first(self.on_add_button_click))
         self.left_header.set_custom_title(add_button)
+
+        self.search_field = Gtk.SearchEntry(sensitive=False)
+        self.search_field.connect('search-changed', ignore_first(self.update_search))
+        self.main_header.pack_end(self.search_field)
+
+        self.search_popover = Gtk.Popover(relative_to=self.search_field)
+        self.search_error = Gtk.Label(margin=10)
+        self.search_error.show()
+        self.search_popover.add(self.search_error)
 
         self.attach(self.left_header, 0, 0, 1, 1)
         self.attach(Gtk.Separator(), 1, 0, 1, 1)
@@ -936,12 +975,79 @@ class HeaderBar(Gtk.Grid):
         self.bus.sync_sizes('add-server', 'width', self.left_header)
         self.bus.sync_sizes('stream-view', 'width', self.stream_header)
 
-    def on_account_loaded(self, account):
-        self.stream_header.set_title(account.info.name)
+        self.account = None
+        self.stream = None
 
-    def on_stream_selected(self, stream):
-        self.main_header.set_title(f'#{stream.name}')
-        self.main_header.set_subtitle(stream.description)
+    def on_narrow_failure(self, account, narrow, error):
+        self.search_field.get_style_context().add_class('error')
+        self.search_error.set_text(f'Error: {error}')
+        self.search_popover.popup()
+
+    def on_account_selected(self, account):
+        self.account = account
+        self.stream = None
+        self.search_field.get_style_context().remove_class('error')
+        self.search_field.set_sensitive(True)
+        self.search_popover.popdown()
+
+        self.stream_header.set_title(account.info.name)
+        self.main_header.set_title('')
+        self.main_header.set_custom_title(None)
+
+    def on_stream_selected(self, account, stream):
+        self.stream = stream
+
+        if stream.description:
+            titles = Gtk.Grid()
+
+            title = Gtk.Label(label=f'#{stream.name}')
+            title.get_style_context().add_class('title')
+            titles.attach(title, 0, 0, 1, 1)
+
+            if stream.description:
+                subtitle = MarkdownView(account, stream.description,
+                                        single_line_mode=True)
+                subtitle.get_style_context().add_class('subtitle')
+                titles.attach(subtitle, 0, 1, 1, 1)
+
+            self.main_header.set_custom_title(titles)
+        else:
+            self.main_header.set_custom_title(None)
+            self.main_header.set_title(f'#{stream.name}')
+        self.main_header.show_all()
+
+    def update_search(self):
+        text = self.search_field.get_text()
+        if not text:
+            if self.stream is not None:
+                self.bus.load_messages(self.account, {'stream': self.stream.name})
+                self.on_stream_selected(self.account, self.stream)
+            else:
+                self.bus.load_messages(self.account)
+                self.on_account_selected(self.account)
+
+            return
+
+        self.main_header.set_title('Search')
+
+        operators = {'has', 'in', 'is', 'stream', 'topic', 'sender', 'near', 'id'}
+        narrow = {}
+        search = []
+
+        if self.stream is not None:
+            narrow['stream'] = self.stream.name
+
+        for term in text.split():
+            if ':' in term:
+                operator, operand = term.split(':', 1)
+                if operator in operators:
+                    narrow[operator] = operand
+                    continue
+
+            search.append(term)
+
+        narrow['search'] = ' '.join(search)
+        self.bus.load_messages(self.account, narrow)
 
     def on_add_button_click(self):
         dialog = AddServerDialog(self.parent)
@@ -963,12 +1069,23 @@ class HeaderBar(Gtk.Grid):
         dialog.destroy()
 
 
+CSS = b'''
+'''
+
+
 class Window(Gtk.ApplicationWindow):
     LOADING = object()
 
     def __init__(self):
         super(Window, self).__init__(title='Azul')
         self.bus = EventBus(self)
+
+        style_provider = Gtk.CssProvider()
+        style_provider.load_from_data(CSS)
+
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(), style_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
         self.set_default_size(1280, 740)
 
@@ -998,13 +1115,6 @@ class Window(Gtk.ApplicationWindow):
         Gtk.main_quit()
 
     def _set_account(self, server=None):
-        previous_stream = self.grid.get_child_at(2, 0)
-        if previous_stream is not None:
-            self.grid.remove(previous_stream)
-        previous_messages = self.grid.get_child_at(4, 0)
-        if previous_messages is not None:
-            self.grid.remove(previous_messages)
-
         if server is None or server is self.LOADING:
             current_stream = self.account_streams_empty
             current_messages = self.account_messages_empty
@@ -1015,9 +1125,19 @@ class Window(Gtk.ApplicationWindow):
             current_stream = self.account_streams[server]
             current_messages = self.account_messages[server]
 
+        previous_stream = self.grid.get_child_at(2, 0)
+        if previous_stream is not None and previous_stream is not current_stream:
+            self.grid.remove(previous_stream)
+        previous_messages = self.grid.get_child_at(4, 0)
+        if previous_messages is not None and previous_messages is not current_messages:
+            self.grid.remove(previous_messages)
+
         current_stream.set_size_request(300, 0)
-        self.grid.attach(current_stream, 2, 0, 1, 1)
-        self.grid.attach(current_messages, 4, 0, 1, 1)
+        if previous_stream is not current_stream:
+            self.grid.attach(current_stream, 2, 0, 1, 1)
+            current_stream.clear_selection()
+        if previous_messages is not current_messages:
+            self.grid.attach(current_messages, 4, 0, 1, 1)
 
         current_stream.show_all()
         current_messages.show_all()
