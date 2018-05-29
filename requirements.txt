@@ -2,5 +2,6 @@ attrs
 keyring
 mistune
 pycairo
+pygments
 pygobject
 zulip

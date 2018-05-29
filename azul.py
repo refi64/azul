@@ -17,6 +17,9 @@ import io
 import keyring
 import math
 import mistune
+import pygments.formatter
+import pygments.lexers
+import pygments.util
 import queue
 import requests
 import sys
@@ -45,24 +48,27 @@ def construct_with_mapped_args(ty, data):
     return ty(**args)
 
 
-# Monkey-patch to allow getting the server icon.
-old_json = requests.Response.json
-
-def new_json(resp):
-    if 'realm/icon' in resp.url or 'gravatar' in resp.url:
-        return {'result': 'success', 'icon': resp.content}
-    return old_json(resp)
-
-requests.Response.json = new_json
-
-
 class ValidationError(Exception):
     pass
 
 
 @attr.s
 class AccountInfo:
+    name = attr.ib()
+    description = attr.ib()
+    icon_url = attr.ib()
+
     icon = attr.ib(default=None, repr=False)
+
+    mapping = {
+        'realm_name': 'name',
+        'realm_description': 'description',
+        'realm_icon': 'icon_url',
+    }
+
+    @staticmethod
+    def from_data(data):
+        return construct_with_mapped_args(AccountInfo, data)
 
 
 @attr.s
@@ -73,7 +79,7 @@ class AccountModel:
     apikey = attr.ib()
     _client = attr.ib(default=None)
 
-    info = attr.ib(default=attr.Factory(AccountInfo))
+    info = attr.ib(default=None)
 
     @property
     def client(self):
@@ -208,9 +214,10 @@ class LoadInfoTask(Task):
     account = attr.ib()
 
     def process(self, bus):
-        result = self.account.client.call_endpoint(url='realm/icon', method='GET')
-        assert 'icon' in result, result
-        self.account.info.icon = result['icon']
+        result = self.account.client.call_endpoint(url='server_settings', method='GET')
+
+        self.account.info = AccountInfo.from_data(result)
+        self.account.info.icon = requests.get(self.account.info.icon_url).content
         bus.emit_from_main_thread('account-info-loaded', self.account)
 
 
@@ -311,6 +318,28 @@ class EventBus(GObject.Object):
     def emit_from_main_thread(self, signal, *args):
         GLib.idle_add(lambda: self.emit(signal, *args))
 
+    def sync_sizes(self, name, axis, widget):
+        def on_size_sync(sync_name, requested_size):
+            if sync_name != name:
+                return
+
+            current = widget.get_allocation()
+            current_request = getattr(widget.get_size_request(), axis)
+            current_allocated = getattr(current, axis)
+            current_size = max([current_allocated, current_request])
+
+            if current_size > requested_size:
+                self.emit('size-sync', name, current_size)
+            elif current_size < requested_size:
+                setattr(current, axis, requested_size)
+                widget.set_size_request(current.width, current.height)
+
+        def on_size_allocate(allocation):
+            self.emit('size-sync', name, getattr(allocation, axis))
+
+        self.connect('size-sync', ignore_first(on_size_sync))
+        widget.connect('size-allocate', ignore_first(on_size_allocate))
+
     def _load_accounts(self):
         saved_accounts = self.settings.get_value('accounts')
 
@@ -380,6 +409,9 @@ class EventBus(GObject.Object):
         self._save_account_data()
         self._load_account(account)
 
+    @GObject.Signal(name='size-sync', arg_types=(object, object))
+    def size_sync(self, name, size): pass
+
     @GObject.Signal(name='api-key-retrieved', arg_types=(object,))
     def api_key_retrieved(self, account): pass
 
@@ -400,6 +432,12 @@ class EventBus(GObject.Object):
 
     @GObject.Signal(name='messages-loaded', arg_types=(object, object, object, object))
     def messages_loaded(self, account, narrow, anchor, messages): pass
+
+    @GObject.Signal(name='ui-stream-selected', arg_types=(object,))
+    def ui_stream_selected(self, stream): pass
+
+    @GObject.Signal(name='ui-add-account', arg_types=(object,))
+    def ui_add_account(self, account): pass
 
 
 class AddServerDialog(Gtk.Dialog):
@@ -494,18 +532,14 @@ class AccountsView(Gtk.ListBox):
         self.bus = bus
         self.widgets = {}
 
-        add_button = Gtk.Button(image=Gtk.Image.new_from_icon_name('list-add-symbolic',
-                                                                   Gtk.IconSize.BUTTON))
-        add_button.set_size_request(self.REALM_ICON_SIZE, self.REALM_ICON_SIZE)
-        add_button.get_style_context().add_class('circular')
-        add_button.connect('clicked', ignore_first(self.on_add_button_click))
-        self.add(add_button)
-
         for i, account in enumerate(self.bus.accounts):
             self.add_account(account, i)
 
         self.bus.connect('account-info-loaded', ignore_first(self.update_account))
+        self.bus.connect('ui-add-account', ignore_first(self.add_account))
         self.connect('row-activated', ignore_first(self.on_account_selected))
+
+        self.bus.sync_sizes('add-server', 'width', self)
 
     def add_account(self, account, index=None):
         spinner = Gtk.Spinner()
@@ -525,25 +559,6 @@ class AccountsView(Gtk.ListBox):
 
         self.show_all()
 
-    def on_add_button_click(self):
-        dialog = AddServerDialog(self.parent)
-
-        while True:
-            response = dialog.run()
-            if response != Gtk.ResponseType.APPLY:
-                break
-
-            account, password = dialog.get_account()
-            try:
-                self.bus.add_account(account, password)
-            except ValidationError as ex:
-                dialog.show_failure(str(ex))
-            else:
-                self.add_account(account)
-                break
-
-        dialog.destroy()
-
     def on_account_selected(self, row):
         self.bus.emit('account-streams-loading')
 
@@ -555,15 +570,17 @@ class AccountsView(Gtk.ListBox):
 
 
 class EmptyListView(Gtk.ListBox):
-    def __init__(self, **kwargs):
+    def __init__(self, bus, **kwargs):
         super(EmptyListView, self).__init__(**kwargs)
+        self.bus = bus
+        self.loading = False
 
         placeholder = Gtk.Label(label='Click a server on the left.', margin=10,
                                 sensitive=False)
         placeholder.show()
         self.set_placeholder(placeholder)
 
-        self.loading = False
+        self.bus.sync_sizes('stream-view', 'width', self)
 
     def set_loading(self):
         if self.loading:
@@ -604,6 +621,8 @@ class StreamsView(Gtk.Bin):
         self.bus.connect('stream-topics-loaded',
                           ignore_first(self.on_stream_topics_loaded))
 
+        self.bus.sync_sizes('stream-view', 'width', self)
+
     def on_stream_selected(self):
         _, it = self.tree.get_selection().get_selected()
         if it is None:
@@ -614,6 +633,7 @@ class StreamsView(Gtk.Bin):
         topic = self.stream_topics[stream.name][self.store[path][0]] if len(path) == 2 \
                                                                      else None
 
+        self.bus.emit('ui-stream-selected', stream)
         self.bus.load_messages(self.account, SearchNarrow(stream=stream, topic=topic))
 
     def on_stream_topics_loaded(self, account, stream, topics):
@@ -662,13 +682,133 @@ class AvatarView(Gtk.Bin):
 
 
 class MarkdownView(Gtk.Grid):
-    class PangoRenderer:
-        def __init__(self):
-            pass
+    class PangoFormatter(pygments.formatter.Formatter):
+        def __init__(self, **kw):
+            super(MarkdownView.PangoFormatter, self).__init__(**kw)
+
+            self.styles = {}
+
+            for token, style in self.style:
+                attrs = {}
+                if style['color']:
+                    attrs['color'] = f'#{style["color"]}'
+                if style['bold']:
+                    attrs['font_weight'] = 'bold'
+                if style['italic']:
+                    attrs['style'] = 'italic'
+                if style['underline']:
+                    attrs['underline'] = 'single'
+
+                self.styles[token] = ' '.join(f'{k}="{v}"' for k, v in attrs.items())
+
+        def format(self, tokens, out):
+            out.write('<span face="monospace">')
+
+            for token, value in tokens:
+                while token not in self.styles:
+                    token = token.parent
+
+                escaped = GLib.markup_escape_text(value)
+                out.write(f'<span {self.styles[token]}>{escaped}</span>')
+
+            out.write('</span>')
+
+    class PangoRenderer(mistune.Renderer):
+        # Block level.
+
+        def block_code(self, code, language=None):
+            highlighted = None
+
+            if language is not None:
+                try:
+                    lexer = pygments.lexers.get_lexer_by_name(language)
+                except pygments.util.ClassNotFound:
+                    pass
+                else:
+                    highlighted = pygments.highlight(code, lexer,
+                                                     MarkdownView.PangoFormatter())
+
+            if highlighted is not None:
+                return highlighted
+            else:
+                escaped = GLib.markup_escape_text(code)
+                return f'<span face="monospace">{escaped}</span>'
+
+        def block_quote(self, text):
+            return text
+
+        def block_html(self, html):
+            return GLib.markup_escape_text(html)
+
+        def header(self, text, level, raw=None):
+            return f'<span size="large" weight="bold">{text}</span>'
+
+        def hrule(self):
+            return ''
+
+        def list(self, body, ordered=True):
+            if ordered:
+                count = 1
+                buf = io.StringIO()
+
+                assert body[0] == '\0'
+                for chunk in body.split('\0')[1:]:
+                    buf.write(f'{count}. ')
+                    buf.write(chunk)
+                    count += 1
+
+                result = buf.getvalue()
+            else:
+                result = body.replace('\0', '•')
+
+            return f'\n{result}\n'
+
+        def list_item(self, text):
+            return f'\0{text}\n'
+
+        def paragraph(self, text):
+            return f'{text}\n'
+
+        # Inline level.
+
+        def autolink(self, link, is_email=False):
+            return self.link(link, None, GLib.markup_escape_text(link))
+
+        def codespan(self, text):
+            return f'<tt>{GLib.markup_escape_text(text)}</tt>'
+
+        def double_emphasis(self, text):
+            return f'<b>{text}</b>'
+
+        def emphasis(self, text):
+            return f'<i>{text}</i>'
+
+        def linebreak(self):
+            return '\n'
+
+        def link(self, link, title, content):
+            escaped = link.replace('\\', '\\\\').replace('"', '\"')
+            return f'<a href="{escaped}">{content}</a>'
+
+        def strikethrough(self, text):
+            return f'<s>{text}</s>'
+
+        def text(self, text):
+            return GLib.markup_escape_text(text)
+
+        def inline_html(self, text):
+            return GLib.markup_escape_text(text)
+
+    renderer = PangoRenderer()
+    markdown = mistune.Markdown(renderer=renderer)
 
     def __init__(self, content, **kwargs):
         super(MarkdownView, self).__init__(**kwargs)
-        self.attach(Gtk.Label(label=content, wrap=True), 0, 0, 1, 1)
+
+        markup = self.markdown(content)
+        label = Gtk.Label(selectable=True, wrap=True)
+        label.set_markup(markup)
+        self.attach(label, 0, 0, 1, 1)
 
         self.show_all()
 
@@ -696,7 +836,7 @@ class MessagesFromSenderView(Gtk.Grid):
         name.set_markup(f'<b>{GLib.markup_escape_text(first.sender_name)}</b>')
         self.attach(name, 1, 0, 1, 1)
 
-        view = MarkdownView(''.join(message.content for message in messages))
+        view = MarkdownView('\n'.join(message.content for message in messages))
         self.attach(view, 1, 1, 1, 1)
 
 
@@ -767,6 +907,62 @@ class MessagesView(Gtk.ScrolledWindow):
         self.show_all()
 
 
+class HeaderBar(Gtk.Grid):
+    def __init__(self, bus, parent):
+        super(HeaderBar, self).__init__()
+        self.bus = bus
+        self.parent = parent
+
+        self.bus.connect('account-info-loaded', ignore_first(self.on_account_loaded))
+        self.bus.connect('ui-stream-selected', ignore_first(self.on_stream_selected))
+
+        self.left_header = Gtk.HeaderBar()
+        self.stream_header = Gtk.HeaderBar()
+        self.main_header = Gtk.HeaderBar(hexpand=True, show_close_button=True)
+
+        add_button = Gtk.Button(image=Gtk.Image.new_from_icon_name('list-add-symbolic',
+                                                                   Gtk.IconSize.BUTTON))
+        add_button.set_size_request(AccountsView.REALM_ICON_SIZE,
+                                    AccountsView.REALM_ICON_SIZE)
+        add_button.connect('clicked', ignore_first(self.on_add_button_click))
+        self.left_header.set_custom_title(add_button)
+
+        self.attach(self.left_header, 0, 0, 1, 1)
+        self.attach(Gtk.Separator(), 1, 0, 1, 1)
+        self.attach(self.stream_header, 2, 0, 1, 1)
+        self.attach(Gtk.Separator(), 3, 0, 1, 1)
+        self.attach(self.main_header, 4, 0, 1, 1)
+
+        self.bus.sync_sizes('add-server', 'width', self.left_header)
+        self.bus.sync_sizes('stream-view', 'width', self.stream_header)
+
+    def on_account_loaded(self, account):
+        self.stream_header.set_title(account.info.name)
+
+    def on_stream_selected(self, stream):
+        self.main_header.set_title(f'#{stream.name}')
+        self.main_header.set_subtitle(stream.description)
+
+    def on_add_button_click(self):
+        dialog = AddServerDialog(self.parent)
+
+        while True:
+            response = dialog.run()
+            if response != Gtk.ResponseType.APPLY:
+                break
+
+            account, password = dialog.get_account()
+            try:
+                self.bus.add_account(account, password)
+            except ValidationError as ex:
+                dialog.show_failure(str(ex))
+            else:
+                self.bus.emit('ui-add-account', account)
+                break
+
+        dialog.destroy()
+
+
 class Window(Gtk.ApplicationWindow):
     LOADING = object()
 
@@ -774,23 +970,27 @@ class Window(Gtk.ApplicationWindow):
         super(Window, self).__init__(title='Azul')
         self.bus = EventBus(self)
 
-        self.set_default_size(1000, 600)
+        self.set_default_size(1280, 740)
 
         self.bus.connect('account-streams-loading',
                          ignore_first(self.on_account_streams_loading))
         self.bus.connect('account-streams-loaded',
                           ignore_first(self.on_account_streams_loaded))
 
+        self.set_titlebar(HeaderBar(self.bus, self))
+
         self.grid = Gtk.Grid()
         self.add(self.grid)
 
         self.accounts = AccountsView(self.bus, self, vexpand=True)
         self.account_streams = {}
-        self.account_streams_empty = EmptyListView(vexpand=True)
+        self.account_streams_empty = EmptyListView(self.bus, vexpand=True)
         self.account_messages = {}
         self.account_messages_empty = Gtk.ListBox(expand=True)
 
         self.grid.attach(self.accounts, 0, 0, 1, 1)
+        self.grid.attach(Gtk.Separator(), 1, 0, 1, 1)
+        self.grid.attach(Gtk.Separator(), 3, 0, 1, 1)
         self._set_account()
 
     def quit(self, window):
@@ -798,10 +998,10 @@ class Window(Gtk.ApplicationWindow):
         Gtk.main_quit()
 
     def _set_account(self, server=None):
-        previous_stream = self.grid.get_child_at(1, 0)
+        previous_stream = self.grid.get_child_at(2, 0)
         if previous_stream is not None:
             self.grid.remove(previous_stream)
-        previous_messages = self.grid.get_child_at(2, 0)
+        previous_messages = self.grid.get_child_at(4, 0)
         if previous_messages is not None:
             self.grid.remove(previous_messages)
 
@@ -815,9 +1015,9 @@ class Window(Gtk.ApplicationWindow):
             current_stream = self.account_streams[server]
             current_messages = self.account_messages[server]
 
-        current_stream.set_size_request(400, 0)
-        self.grid.attach(current_stream, 1, 0, 1, 1)
-        self.grid.attach(current_messages, 2, 0, 1, 1)
+        current_stream.set_size_request(300, 0)
+        self.grid.attach(current_stream, 2, 0, 1, 1)
+        self.grid.attach(current_messages, 4, 0, 1, 1)
 
         current_stream.show_all()
         current_messages.show_all()
