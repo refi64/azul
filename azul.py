@@ -13,6 +13,7 @@ from gi.repository import GLib, GObject, Gio, Gdk, GdkPixbuf, Gtk
 import cairo
 
 import attr
+import functools
 import io
 import keyring
 import math
@@ -88,6 +89,14 @@ class AccountModel:
             self._client = zulip.Client(site=self.server, email=self.email,
                                         api_key=self.apikey)
         return self._client
+
+    def get_absolute_url(self, url):
+        server = self.server
+        if url.startswith('/'):
+            url = url[1:]
+        if not server.startswith('http'):
+            server = f'https://{server}'
+        return urllib.parse.urljoin(server, url)
 
 
 @attr.s
@@ -183,16 +192,20 @@ class GetApiKeyTask(Task):
         result = client.call_endpoint(url='fetch_api_key', method='POST',
                                       request={'username': self.account.email,
                                                'password': self.password})
-        self.account.apikey = result['api_key']
-        bus.emit_from_main_thread('api-key-retrieved', self.account)
+        if result['result'] == 'error':
+            bus.emit_from_main_thread('login-failed', self.account, result['msg'])
+        else:
+            self.account.apikey = result['api_key']
+            bus.emit_from_main_thread('api-key-retrieved', self.account)
 
 
 @attr.s
 class LoadDataTask(Task):
+    account = attr.ib()
     url = attr.ib()
 
     def process(self, bus):
-        data = requests.get(self.url).content
+        data = requests.get(self.account.get_absolute_url(self.url)).content
         bus.emit_from_main_thread('data-loaded', self.url, data)
 
 
@@ -204,6 +217,8 @@ class LoadInfoTask(Task):
         result = self.account.client.call_endpoint(url='server_settings', method='GET')
 
         self.account.info = AccountInfo.from_data(result)
+        self.account.info.icon_url = self.account.get_absolute_url(
+            self.account.info.icon_url)
         self.account.info.icon = requests.get(self.account.info.icon_url).content
         bus.emit_from_main_thread('account-info-loaded', self.account)
 
@@ -354,13 +369,12 @@ class EventBus(GObject.Object):
     def get_account_for_server(self, server):
         return self._accounts[server]
 
-    def _save_account_data(self, accounts=None):
-        accounts = accounts or self._accounts.values()
+    def _save_account_data(self):
         account_data = [(account.server, account.email, account.apikey or '')
-                        for account in accounts]
+                        for account in self._accounts.values()]
         self.settings.set_value('accounts', GLib.Variant('a(sss)', account_data))
 
-    def add_account(self, account, password):
+    def set_account(self, account, password):
         if not account.server:
             raise ValidationError('Invalid server.')
         if '@' not in account.email:
@@ -368,12 +382,13 @@ class EventBus(GObject.Object):
         if not password:
             raise ValidationError('Invalid password.')
 
-        if account.server in self._accounts:
+        if account.server in self._accounts and account.index == -1:
             raise ValidationError('An account for this server already exists.')
 
-        self._save_account_data([*self._accounts.values(), account])
-        account.index = len(self._accounts)
+        if account.index == -1:
+            account.index = len(self._accounts)
         self._accounts[account.server] = account
+        self._save_account_data()
 
         keyring.set_password(account.server, account.email, password)
 
@@ -387,8 +402,8 @@ class EventBus(GObject.Object):
         else:
             self._thread.add_task(LoadInfoTask(account))
 
-    def load_data_from_url(self, url):
-        self._thread.add_task(LoadDataTask(url))
+    def load_data_from_url(self, account, url):
+        self._thread.add_task(LoadDataTask(account, url))
 
     def load_streams_for_account(self, account):
         self._thread.add_task(LoadStreamsTask(account))
@@ -408,6 +423,9 @@ class EventBus(GObject.Object):
 
     @GObject.Signal(name='api-key-retrieved', arg_types=(object,))
     def api_key_retrieved(self, account): pass
+
+    @GObject.Signal(name='login-failed', arg_types=(object, object))
+    def login_failed(self, account, error): pass
 
     @GObject.Signal(name='data-loaded', arg_types=(str, object))
     def data_loaded(self, url, data): pass
@@ -440,10 +458,12 @@ class EventBus(GObject.Object):
     def ui_add_account(self, account): pass
 
 
-class AddServerDialog(Gtk.Dialog):
-    def __init__(self, parent):
-        super(AddServerDialog, self).__init__('Add Server', parent, 0,
+class ServerDialog(Gtk.Dialog):
+    def __init__(self, parent, account=None):
+        title = 'Add Server' if account is None else 'Edit Server'
+        super(ServerDialog, self).__init__(title, parent, 0,
             ('_Save', Gtk.ResponseType.APPLY, '_Cancel', Gtk.ResponseType.CANCEL))
+        self.account = account
         self.set_default_size(500, 0)
 
         self.get_action_area().set_property('margin', 5)
@@ -466,6 +486,11 @@ class AddServerDialog(Gtk.Dialog):
         for i, name in enumerate(labels):
             label = Gtk.Label(label=f'{name.capitalize()}:', halign=Gtk.Align.END)
             entry = Gtk.Entry(hexpand=True)
+            if account is not None:
+                if name == 'password':
+                    entry.set_text(keyring.get_password(account.server, account.email))
+                else:
+                    entry.set_text(getattr(account, name))
 
             grid.attach(label, 0, i + 1, 1, 1)
             grid.attach(entry, 1, i + 1, 1, 1)
@@ -483,26 +508,56 @@ class AddServerDialog(Gtk.Dialog):
         self.error_bar.hide()
 
     def get_account(self):
-        return (AccountModel(index=-1, email=self.email.get_text(),
-                             server=self.server.get_text(), apikey=None),
-                self.password.get_text())
+        if self.account is not None:
+            account = self.account
+            account.email = self.email.get_text()
+            account.server = self.server.get_text()
+        else:
+            account = AccountModel(index=-1, email=self.email.get_text(),
+                                   server=self.server.get_text(), apikey=None)
+
+        return (account, self.password.get_text())
 
     def show_failure(self, message):
         self.error_label.set_label(message)
         self.error_bar.show_all()
+
+    @staticmethod
+    def get_account_info(parent, bus, account=None):
+        dialog = ServerDialog(parent, account)
+        account = None
+
+        while True:
+            response = dialog.run()
+            if response != Gtk.ResponseType.APPLY:
+                break
+
+            account, password = dialog.get_account()
+            try:
+                bus.set_account(account, password)
+            except ValidationError as ex:
+                dialog.show_failure(str(ex))
+            else:
+                break
+
+        dialog.destroy()
+        return account
 
 
 class DataImage(Gtk.Image):
     def __init__(self, size, data):
         super(DataImage, self).__init__()
 
-        loader = GdkPixbuf.PixbufLoader()
-        loader.write(data)
-        loader.close()
+        if isinstance(data, GdkPixbuf.Pixbuf):
+            pixbuf = data
+        else:
+            loader = GdkPixbuf.PixbufLoader()
+            loader.write(data)
+            loader.close()
 
-        pixbuf = loader.get_pixbuf()
+            pixbuf = loader.get_pixbuf()
+
         pixbuf = pixbuf.scale_simple(size, size, GdkPixbuf.InterpType.BILINEAR)
-
         self.set_from_pixbuf(self._process(pixbuf, size))
 
     def _process(self, pixbuf, size):
@@ -533,41 +588,89 @@ class AccountsView(Gtk.ListBox):
         self.widgets = {}
 
         for i, account in enumerate(self.bus.accounts):
-            self.add_account(account, i)
+            self.add_account(account)
 
+        self.bus.connect('login-failed', ignore_first(self.on_login_failure))
         self.bus.connect('account-info-loaded', ignore_first(self.update_account))
         self.bus.connect('ui-add-account', ignore_first(self.add_account))
         self.connect('row-activated', ignore_first(self.on_account_selected))
 
         self.bus.sync_sizes('add-server', 'width', self)
 
-    def add_account(self, account, index=None):
+    def _insert_account_widget(self, widget, account, index=None):
+        index = account.index
+        if index is None:
+            index = len(self.bus.accounts) - 1
+
+        if account.server in self.widgets:
+            original = self.widgets[account.server]
+            self.remove(original.get_parent().get_parent())
+        self.widgets[account.server] = widget
+
+        event_box = Gtk.EventBox()
+        event_box.add(widget)
+
+        event_box.set_events(Gdk.EventMask.BUTTON_RELEASE_MASK)
+        event_box.connect('button-release-event',
+                          ignore_first(functools.partial(self.show_context_menu,
+                                                         account)))
+
+        event_box.show_all()
+        self.insert(event_box, index)
+
+    def add_account(self, account):
         spinner = Gtk.Spinner()
         spinner.set_size_request(self.REALM_ICON_SIZE, self.REALM_ICON_SIZE)
         spinner.start()
 
-        self.widgets[account.server] = spinner
-        self.insert(spinner, index if index is not None
-                                   else len(self.bus.accounts) - 1)
+        self._insert_account_widget(spinner, account)
+        self.show_all()
+
+    def on_login_failure(self, account, error):
+        icon = Gtk.IconTheme.get_default().lookup_icon('dialog-error',
+                                                       self.REALM_ICON_SIZE, 0)
+        image = DataImage(self.REALM_ICON_SIZE, icon.load_icon())
+        self._insert_account_widget(image, account)
+
+        row = image.get_parent().get_parent()
+        row.set_selectable(False)
+        row.set_tooltip_text(error)
 
     def update_account(self, account):
-        widget = self.widgets[account.server]
-        self.remove(widget.get_parent())
-
         image = CircularImage(self.REALM_ICON_SIZE, account.info.icon)
+        image.get_style_context().add_class('circular')
         image.set_tooltip_text(account.info.name)
-        self.insert(image, account.index)
+        self._insert_account_widget(image, account)
 
         self.show_all()
 
-    def on_account_selected(self, row):
-        self.bus.emit('account-streams-loading')
+    def show_context_menu(self, account, event):
+        if event.type != Gdk.EventType.BUTTON_RELEASE or event.button != 3:
+            return False
 
+        def on_edit():
+            ServerDialog.get_account_info(self.parent, self.bus, account)
+            self.add_account(account)
+
+        menu = Gtk.Menu()
+        edit = Gtk.MenuItem.new_with_label('Edit Account')
+        edit.connect('activate', ignore_first(on_edit))
+        menu.append(edit)
+
+        menu.show_all()
+        menu.popup_at_pointer(event)
+
+    def on_account_selected(self, row):
         index = row.get_index()
         account = self.bus.accounts[index]
         assert account.index == index
+
+        if account.info is None:
+            return
+
         self.bus.emit('ui-account-selected', account)
 
+        self.bus.emit('account-streams-loading')
         self.bus.load_streams_for_account(account)
 
 
@@ -663,10 +766,11 @@ class AvatarView(Gtk.Bin):
     _AVATAR_SIZE = 48
     _cache = {}
 
-    def __init__(self, bus, url, **kwargs):
+    def __init__(self, bus, account, url, **kwargs):
         super(AvatarView, self).__init__(**kwargs)
         self.set_size_request(self._AVATAR_SIZE, self._AVATAR_SIZE)
         self.bus = bus
+        self.account = account
         self.url = url
         self.image = None
         self.id = None
@@ -679,7 +783,7 @@ class AvatarView(Gtk.Bin):
         self.id = self.bus.connect('data-loaded', ignore_first(self.on_data_loaded))
         if cached is missing:
             self._cache[url] = None
-            self.bus.load_data_from_url(url)
+            self.bus.load_data_from_url(self.account, url)
 
     def on_data_loaded(self, url, data):
         if url != self.url:
@@ -833,7 +937,7 @@ class MarkdownView(Gtk.Label):
         self.show_all()
 
     def activate_link(self, url):
-        url = urllib.parse.urljoin(self.account.server, url)
+        url = self.account.get_absolute_url(url)
         scheme = urllib.parse.urlparse(url).scheme
         if not scheme:
             appinfo = Gio.AppInfo.get_default_for_type('x-scheme-handler/http', True)
@@ -857,7 +961,8 @@ class MessagesFromSenderView(Gtk.Grid):
         assert messages
         first = messages[0]
 
-        avatar = AvatarView(self.bus, first.sender_avatar, valign=Gtk.Align.START)
+        avatar = AvatarView(self.bus, self.account, first.sender_avatar,
+                            valign=Gtk.Align.START)
         self.attach(avatar, 0, 0, 1, 5)
 
         name = Gtk.Label(halign=Gtk.Align.START)
@@ -1049,23 +1154,8 @@ class HeaderBar(Gtk.Grid):
         self.bus.load_messages(self.account, narrow)
 
     def on_add_button_click(self):
-        dialog = AddServerDialog(self.parent)
-
-        while True:
-            response = dialog.run()
-            if response != Gtk.ResponseType.APPLY:
-                break
-
-            account, password = dialog.get_account()
-            try:
-                self.bus.add_account(account, password)
-            except ValidationError as ex:
-                dialog.show_failure(str(ex))
-            else:
-                self.bus.emit('ui-add-account', account)
-                break
-
-        dialog.destroy()
+        account = ServerDialog.get_account_info(self.parent, self.bus)
+        self.bus.emit('ui-add-account')
 
 
 CSS = b'''
