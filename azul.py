@@ -1,5 +1,8 @@
 #!/usr/bin/env python
 
+import gevent.monkey
+gevent.monkey.patch_all(thread=False)
+
 import sys
 sys.modules['gi.overrides.Gdk'] = None
 
@@ -14,10 +17,13 @@ import cairo
 
 import attr
 import functools
+import gevent.os
+import gevent.pool
 import io
 import keyring
 import math
 import mistune
+import os
 import pygments.formatter
 import pygments.lexers
 import pygments.util
@@ -179,7 +185,8 @@ class MessageModel:
         return construct_with_mapped_args(MessageModel, data)
 
 
-class Task: pass
+class Task:
+    pass
 
 
 @attr.s
@@ -286,23 +293,30 @@ class TaskThread(threading.Thread):
     def __init__(self, bus):
         super(TaskThread, self).__init__()
         self.bus = bus
+
+        self._signal_reader, self._signal_writer = os.pipe()
         self._tasks = queue.Queue()
 
     def add_task(self, task):
         self._tasks.put(task, block=False)
+        os.write(self._signal_writer, bytes([1]))
+
+    def quit(self):
+        os.write(self._signal_writer, bytes([0]))
 
     def run(self):
+        pool = gevent.pool.Pool()
+
         while True:
-            task = self._tasks.get()
-            if task is None:
+            signal = gevent.os.tp_read(self._signal_reader, 1)
+            if not signal[0]:
                 break
 
-            try:
-                task.process(self.bus)
-            except:
-                traceback.print_exc()
-            finally:
-                self._tasks.task_done()
+            task = self._tasks.get()
+            pool.spawn(task.process, self.bus)
+            self._tasks.task_done()
+
+        pool.kill()
 
 
 class EventBus(GObject.Object):
@@ -322,10 +336,17 @@ class EventBus(GObject.Object):
         self._load_accounts()
 
     def quit(self):
-        self._thread.add_task(None)
+        self._thread.quit()
 
     def emit_from_main_thread(self, signal, *args):
-        GLib.idle_add(lambda: self.emit(signal, *args))
+        def emitter():
+            self.emit(signal, *args)
+            return False
+
+        GLib.idle_add(emitter)
+
+    def _add_task(self, task):
+        self._thread.add_task(task)
 
     def sync_sizes(self, name, axis, widget):
         def on_size_sync(sync_name, requested_size):
@@ -398,21 +419,21 @@ class EventBus(GObject.Object):
         if not account.apikey:
             if password is None:
                 password = keyring.get_password(account.server, account.email)
-            self._thread.add_task(GetApiKeyTask(account, password))
+            self._add_task(GetApiKeyTask(account, password))
         else:
-            self._thread.add_task(LoadInfoTask(account))
+            self._add_task(LoadInfoTask(account))
 
     def load_data_from_url(self, account, url):
-        self._thread.add_task(LoadDataTask(account, url))
+        self._add_task(LoadDataTask(account, url))
 
     def load_streams_for_account(self, account):
-        self._thread.add_task(LoadStreamsTask(account))
+        self._add_task(LoadStreamsTask(account))
 
     def load_messages(self, account, narrow=None):
-        self._thread.add_task(LoadMessagesTask(account, narrow or {}))
+        self._add_task(LoadMessagesTask(account, narrow or {}))
 
     def load_topics_in_stream(self, account, stream):
-        self._thread.add_task(LoadTopicsTask(account, stream))
+        self._add_task(LoadTopicsTask(account, stream))
 
     def on_api_key_retrieved(self, account):
         self._save_account_data()
@@ -836,7 +857,8 @@ class MarkdownView(Gtk.Label):
 
         def block_code(self, code, language=None):
             if language == 'quote':
-                return self.block_quote(code)
+                markdown = mistune.Markdown(renderer=self)
+                return self.block_quote(markdown(code))
 
             highlighted = None
 
@@ -866,6 +888,9 @@ class MarkdownView(Gtk.Label):
 
         def hrule(self):
             return ''
+
+        def image(self, src, title, alt_text):
+            return self.link(src, title, alt_text)
 
         def list(self, body, ordered=True):
             if ordered:
