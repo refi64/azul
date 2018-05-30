@@ -19,6 +19,7 @@ import attr
 import functools
 import gevent.os
 import gevent.pool
+import greenlet
 import io
 import keyring
 import math
@@ -43,17 +44,15 @@ def ignore_first(func):
     return lambda first, *args, **kwargs: func(*args, **kwargs)
 
 
-def construct_with_mapped_args(ty, data):
-    args = {}
-
+def construct_with_mapped_args(ty, data, **kw):
     for key, value in data.items():
         if key not in ty.mapping:
             continue
 
         target_key = ty.mapping[key]
-        args[target_key or key] = value
+        kw[target_key or key] = value
 
-    return ty(**args)
+    return ty(**kw)
 
 
 class ValidationError(Exception):
@@ -65,8 +64,6 @@ class AccountInfo:
     name = attr.ib()
     description = attr.ib()
     icon_url = attr.ib()
-
-    icon = attr.ib(default=None, repr=False)
 
     mapping = {
         'realm_name': 'name',
@@ -80,6 +77,21 @@ class AccountInfo:
 
 
 @attr.s
+class AccountQueueModel:
+    id = attr.ib()
+    last_event_id = attr.ib()
+
+    mapping = {
+        'queue_id': 'id',
+        'last_event_id': None,
+    }
+
+    @staticmethod
+    def from_data(data):
+        return construct_with_mapped_args(AccountQueueModel, data)
+
+
+@attr.s
 class AccountModel:
     index = attr.ib()
     server = attr.ib()
@@ -88,6 +100,7 @@ class AccountModel:
     _client = attr.ib(default=None)
 
     info = attr.ib(default=None)
+    queue = attr.ib(default=None)
 
     @property
     def client(self):
@@ -103,6 +116,36 @@ class AccountModel:
         if not server.startswith('http'):
             server = f'https://{server}'
         return urllib.parse.urljoin(server, url)
+
+
+@attr.s
+class EventModel:
+    id = attr.ib()
+
+    mapping = {
+        'id': None,
+    }
+
+    @staticmethod
+    def from_data(data):
+        if data['type'] == 'message':
+            return MessageEventModel.from_data(data)
+        else:
+            return construct_with_mapped_args(EventModel, data)
+
+
+@attr.s
+class MessageEventModel(EventModel):
+    message = attr.ib()
+
+    mapping = {
+        **EventModel.mapping,
+    }
+
+    @staticmethod
+    def from_data(data):
+        message = MessageModel.from_data(data['message'])
+        return construct_with_mapped_args(MessageEventModel, data, message=message)
 
 
 @attr.s
@@ -165,17 +208,21 @@ class TopicModel:
 @attr.s
 class MessageModel:
     id = attr.ib()
+    type = attr.ib()
     sender_name = attr.ib()
     sender_avatar = attr.ib()
     sender_id = attr.ib()
     topic_name = attr.ib()
     content = attr.ib(repr=False)
+    stream_id = attr.ib(default=None)
 
     mapping = {
         'id': None,
+        'type': None,
         'sender_full_name': 'sender_name',
         'avatar_url': 'sender_avatar',
         'sender_id': None,
+        'stream_id': None,
         'subject': 'topic_name',
         'content': None,
     }
@@ -183,6 +230,41 @@ class MessageModel:
     @staticmethod
     def from_data(data):
         return construct_with_mapped_args(MessageModel, data)
+
+
+@attr.s
+class MessagesModel:
+    found_oldest = attr.ib()
+    found_newest = attr.ib()
+    messages = attr.ib()
+
+    mapping = {
+        'found_oldest': None,
+        'found_newest': None,
+    }
+
+    @staticmethod
+    def from_data(data):
+        messages = list(map(MessageModel.from_data, data['messages']))
+        return construct_with_mapped_args(MessagesModel, data, messages=messages)
+
+
+@attr.s
+class SearchNarrow:
+    stream = attr.ib(default=None)
+    topic = attr.ib(default=None)
+    query = attr.ib(default=attr.Factory(dict))
+
+    def to_data(self):
+        narrow = []
+        narrow.extend({'operator': k, 'operand': v} for k, v in self.query.items())
+
+        if self.stream is not None and 'stream' not in self.query:
+            narrow.append({'operator': 'stream', 'operand': self.stream.name})
+        if self.topic is not None and 'topic' not in self.query:
+            narrow.append({'operator': 'topic', 'operand': self.topic.name})
+
+        return narrow
 
 
 class Task:
@@ -217,17 +299,46 @@ class LoadDataTask(Task):
 
 
 @attr.s
-class LoadInfoTask(Task):
+class LoadAccountTask(Task):
     account = attr.ib()
 
     def process(self, bus):
-        result = self.account.client.call_endpoint(url='server_settings', method='GET')
+        info = self.account.client.call_endpoint(url='server_settings', method='GET')
 
-        self.account.info = AccountInfo.from_data(result)
+        self.account.info = AccountInfo.from_data(info)
         self.account.info.icon_url = self.account.get_absolute_url(
             self.account.info.icon_url)
         self.account.info.icon = requests.get(self.account.info.icon_url).content
-        bus.emit_from_main_thread('account-info-loaded', self.account)
+
+        queue = self.account.client.register(event_types=['message'])
+        self.account.queue = AccountQueueModel.from_data(queue)
+
+        bus.emit_from_main_thread('account-loaded', self.account)
+
+
+@attr.s
+class MonitorAccountEventsTask(Task):
+    account = attr.ib()
+
+    def process(self, bus):
+        while True:
+            try:
+                result = self.account.client.get_events(
+                    queue_id=self.account.queue.id,
+                    last_event_id=self.account.queue.last_event_id)
+                events = list(map(EventModel.from_data, result['events']))
+
+                message_events = [event for event in events
+                                  if isinstance(event, MessageEventModel)]
+                if message_events:
+                    bus.emit_from_main_thread('message-events', self.account,
+                                              message_events)
+
+                self.account.queue.last_event_id = events[-1].id
+            except greenlet.GreenletExit:
+                raise
+            except:
+                traceback.print_exc()
 
 
 @attr.s
@@ -267,24 +378,22 @@ class LoadTopicsTask(Task):
 @attr.s
 class LoadMessagesTask(Task):
     account = attr.ib()
-    narrow = attr.ib()
-    anchor = attr.ib(default=0)
+    anchor = attr.ib(default=10000000000000000)
+    narrow = attr.ib(default=attr.Factory(SearchNarrow))
 
     def process(self, bus):
-        narrow = [{'operator': k, 'operand': v} for k, v in self.narrow.items()]
-
+        narrow = self.narrow.to_data()
         result = self.account.client.call_endpoint(url='messages', method='GET',
                                                    request={'anchor': self.anchor,
-                                                            'num_before': 0,
-                                                            'num_after': 100,
+                                                            'num_before': 40,
+                                                            'num_after': 0,
                                                             'narrow': narrow,
                                                             'apply_markdown': False})
         if result.get('code') == 'BAD_NARROW':
             bus.emit_from_main_thread('message-narrow-failed', self.account,
                                       self.narrow, result['desc'])
         else:
-            messages = list(map(MessageModel.from_data, result['messages']))
-
+            messages = MessagesModel.from_data(result)
             bus.emit_from_main_thread('messages-loaded', self.account, self.narrow,
                                       self.anchor, messages)
 
@@ -328,6 +437,7 @@ class EventBus(GObject.Object):
         self.settings = Gio.Settings(APP_ID)
 
         self.connect('api-key-retrieved', ignore_first(self.on_api_key_retrieved))
+        self.connect('account-loaded', ignore_first(self.on_account_loaded))
 
         self._thread = TaskThread(self)
         self._thread.start()
@@ -421,7 +531,7 @@ class EventBus(GObject.Object):
                 password = keyring.get_password(account.server, account.email)
             self._add_task(GetApiKeyTask(account, password))
         else:
-            self._add_task(LoadInfoTask(account))
+            self._add_task(LoadAccountTask(account))
 
     def load_data_from_url(self, account, url):
         self._add_task(LoadDataTask(account, url))
@@ -429,8 +539,8 @@ class EventBus(GObject.Object):
     def load_streams_for_account(self, account):
         self._add_task(LoadStreamsTask(account))
 
-    def load_messages(self, account, narrow=None):
-        self._add_task(LoadMessagesTask(account, narrow or {}))
+    def load_messages(self, account, **kwargs):
+        self._add_task(LoadMessagesTask(account, **kwargs))
 
     def load_topics_in_stream(self, account, stream):
         self._add_task(LoadTopicsTask(account, stream))
@@ -438,6 +548,9 @@ class EventBus(GObject.Object):
     def on_api_key_retrieved(self, account):
         self._save_account_data()
         self._load_account(account)
+
+    def on_account_loaded(self, account):
+        self._add_task(MonitorAccountEventsTask(account))
 
     @GObject.Signal(name='size-sync', arg_types=(object, object))
     def size_sync(self, name, size): pass
@@ -451,8 +564,8 @@ class EventBus(GObject.Object):
     @GObject.Signal(name='data-loaded', arg_types=(str, object))
     def data_loaded(self, url, data): pass
 
-    @GObject.Signal(name='account-info-loaded', arg_types=(object,))
-    def account_info_loaded(self, account): pass
+    @GObject.Signal(name='account-loaded', arg_types=(object,))
+    def account_loaded(self, account): pass
 
     @GObject.Signal(name='account-streams-loading')
     def account_streams_loading(self): pass
@@ -468,6 +581,9 @@ class EventBus(GObject.Object):
 
     @GObject.Signal(name='message-narrow-failed', arg_types=(object, object, object))
     def message_narrow_failed(self, account, narrow, error): pass
+
+    @GObject.Signal(name='message-events', arg_types=(object, object))
+    def message_events(self, account, events): pass
 
     @GObject.Signal(name='ui-account-selected', arg_types=(object,))
     def ui_account_selected(self, account): pass
@@ -612,7 +728,7 @@ class AccountsView(Gtk.ListBox):
             self.add_account(account)
 
         self.bus.connect('login-failed', ignore_first(self.on_login_failure))
-        self.bus.connect('account-info-loaded', ignore_first(self.update_account))
+        self.bus.connect('account-loaded', ignore_first(self.update_account))
         self.bus.connect('ui-add-account', ignore_first(self.add_account))
         self.connect('row-activated', ignore_first(self.on_account_selected))
 
@@ -758,6 +874,7 @@ class StreamsView(Gtk.ScrolledWindow):
     def on_stream_selected(self):
         _, it = self.tree.get_selection().get_selected()
         if it is None:
+            self.bus.emit('ui-stream-selected', self.account, None)
             self.bus.load_messages(self.account)
             return
 
@@ -765,13 +882,10 @@ class StreamsView(Gtk.ScrolledWindow):
         stream = self.streams[self.store[path[0]][0][1:]]
         topic = self.stream_topics[stream.name][self.store[path][0]] if len(path) == 2 \
                                                                      else None
+        narrow = SearchNarrow(stream=stream, topic=topic)
 
         self.bus.emit('ui-stream-selected', self.account, stream)
-
-        narrow = {'stream': stream.name}
-        if topic is not None:
-            narrow['topic'] = topic.name
-        self.bus.load_messages(self.account, narrow)
+        self.bus.load_messages(self.account, narrow=narrow)
 
     def on_stream_topics_loaded(self, account, stream, topics):
         if account is not self.account:
@@ -951,7 +1065,8 @@ class MarkdownView(Gtk.Label):
     markdown = mistune.Markdown(renderer=renderer)
 
     def __init__(self, account, content, **kwargs):
-        super(MarkdownView, self).__init__(track_visited_links=False, **kwargs)
+        super(MarkdownView, self).__init__(xalign=0,
+                                           track_visited_links=False, **kwargs)
         self.account = account
 
         markup = self.markdown(content)
@@ -977,27 +1092,33 @@ class MarkdownView(Gtk.Label):
 
 
 class MessagesFromSenderView(Gtk.Grid):
-    def __init__(self, bus, account, messages, **kwargs):
+    def __init__(self, bus, account, first, **kwargs):
         super(MessagesFromSenderView, self).__init__(**kwargs)
         self.bus = bus
         self.account = account
-        self.messages = messages
+        self.first = first
+        self.messages = []
 
         self.set_column_spacing(10)
 
-        assert messages
-        first = messages[0]
-
-        avatar = AvatarView(self.bus, self.account, first.sender_avatar,
+        avatar = AvatarView(self.bus, self.account, self.first.sender_avatar,
                             valign=Gtk.Align.START)
         self.attach(avatar, 0, 0, 1, 5)
 
         name = Gtk.Label(halign=Gtk.Align.START)
-        name.set_markup(f'<b>{GLib.markup_escape_text(first.sender_name)}</b>')
+        name.set_markup(f'<b>{GLib.markup_escape_text(self.first.sender_name)}</b>')
         self.attach(name, 1, 0, 1, 1)
 
-        view = MarkdownView(account,
-                            '\n'.join(message.content for message in messages),
+        self.add_message(first)
+
+    def add_message(self, message):
+        previous_view = self.get_child_at(1, 1)
+        if previous_view is not None:
+            previous_view.destroy()
+
+        self.messages.append(message)
+        view = MarkdownView(self.account,
+                            '\n'.join(message.content for message in self.messages),
                             selectable=True, wrap=True)
         self.attach(view, 1, 1, 1, 1)
 
@@ -1008,6 +1129,7 @@ class TopicView(Gtk.Grid):
         self.bus = bus
         self.account = account
         self.name = name
+        self.messages = []
 
         label = Gtk.Label(hexpand=True)
         label.set_markup(f'<b>{GLib.markup_escape_text(name)}</b>')
@@ -1015,13 +1137,19 @@ class TopicView(Gtk.Grid):
 
         self.bottom = label
 
-    def add_messages_from_sender(self, messages):
-        sender_messages_view = MessagesFromSenderView(self.bus, self.account, messages)
+    def add_message(self, message):
+        self.messages.append(message)
+
+        if isinstance(self.bottom, MessagesFromSenderView):
+            previous_sender_id = self.bottom.first.sender_id
+            if previous_sender_id == message.sender_id:
+                self.bottom.add_message(message)
+                return
+
+        sender_messages_view = MessagesFromSenderView(self.bus, self.account, message)
         self.attach_next_to(sender_messages_view, self.bottom, Gtk.PositionType.BOTTOM,
                             1, 1)
         self.bottom = sender_messages_view
-
-        self.show_all()
 
 
 class MessagesView(Gtk.ScrolledWindow):
@@ -1029,44 +1157,148 @@ class MessagesView(Gtk.ScrolledWindow):
         super(MessagesView, self).__init__(**kwargs)
         self.bus = bus
         self.account = account
+        self.narrow = None
+        self.last_messages = None
+        self.topic_views = []
+        self.requested_more_messages = False
+        self.brace_for_scrollbar_reset = False
 
         self.listbox = Gtk.ListBox(expand=True)
         self.add(self.listbox)
 
-        self.active_messages = set()
-        self.message_views = {}
-
         self.bus.connect('messages-loaded', ignore_first(self.on_messages_loaded))
+        self.bus.connect('message-events', ignore_first(self.on_message_events))
+
+        adjustment = self.get_vadjustment()
+        adjustment.connect('changed', ignore_first(self.on_adjustment_changed))
+        adjustment.connect('value-changed',
+                           ignore_first(self.on_adjustment_value_changed))
+        self.update_previous_adjustment()
+
+    def update_previous_adjustment(self):
+        adjustment = self.get_vadjustment()
+        self.previous_adjustment_upper = adjustment.get_upper()
+        self.previous_adjustment_top = (adjustment.get_upper() -
+                                        adjustment.get_page_size())
+        self.previous_adjustment_value = adjustment.get_value()
 
     def on_messages_loaded(self, account, narrow, anchor, messages):
         if account is not self.account:
             return
 
-        self.remove(self.listbox)
-        self.listbox = Gtk.ListBox(expand=True)
-        self.listbox.set_selection_mode(Gtk.SelectionMode.NONE)
-        self.add(self.listbox)
+        if narrow != self.narrow:
+            self.remove(self.listbox)
+            self.listbox = Gtk.ListBox(expand=True)
+            self.listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+            self.add(self.listbox)
+
+            self.topic_views = []
+
+        self.narrow = narrow
+        self.last_messages = messages
+        self.requested_more_messages = False
 
         topic_view = None
-        messages_from_sender = []
+        message_backlog = []
 
-        for index, (previous, message) in enumerate(zip([None, *messages], messages)):
-            if messages_from_sender and (previous.sender_id != message.sender_id or
-                                         previous.topic_name != message.topic_name):
-                topic_view.add_messages_from_sender(messages_from_sender)
-                messages_from_sender = []
+        if messages.found_newest:
+            topic_view_insert_position = len(self.topic_views)
+        else:
+            topic_view_insert_position = 0
 
-            if previous is None or previous.topic_name != message.topic_name:
-                messages_from_sender = []
+            if self.topic_views[0].name == messages.messages[-1].topic_name:
+                top = self.topic_views.pop(0)
+                message_backlog = top.messages[1:]
+                top.get_parent().destroy()
+
+        original_first = self.topic_views[0] if self.topic_views else None
+
+        for message in messages.messages:
+            if topic_view is None or topic_view.name != message.topic_name:
                 topic_view = TopicView(self.bus, account, message.topic_name)
-                self.listbox.add(topic_view)
+                self.listbox.insert(topic_view, topic_view_insert_position)
+                self.topic_views.insert(topic_view_insert_position, topic_view)
+                topic_view_insert_position += 1
 
-            messages_from_sender.append(message)
+            topic_view.add_message(message)
 
-        if messages_from_sender:
-            topic_view.add_messages_from_sender(messages_from_sender)
+        for message in message_backlog:
+            topic_view.add_message(message)
+
+        if original_first is not None and not messages.found_newest:
+            original_position = original_first.get_allocation().y
+            handler = ignore_first(
+                lambda _: self.on_listbox_size_allocate(signal_id, original_first,
+                                                        original_position))
+            signal_id = self.listbox.connect('size-allocate', handler)
+        else:
+            self.requested_more_messages = False
 
         self.show_all()
+
+    def on_listbox_size_allocate(self, signal_id, original_first, original_position):
+        new_position = original_first.get_allocation().y
+        amount_moved = new_position - original_position
+
+        adjustment = self.get_vadjustment()
+        adjustment.set_value(adjustment.get_value() + amount_moved)
+
+        self.listbox.disconnect(signal_id)
+        self.requested_more_messages = False
+        self.brace_for_scrollbar_reset = True
+
+    def on_message_events(self, account, events):
+        if account is not self.account:
+            return
+
+        if self.narrow is None or self.narrow.query:
+            return
+
+        adjustment = self.get_vadjustment()
+        top = adjustment.get_upper() - adjustment.get_page_size()
+        current = adjustment.get_value()
+
+        stream = self.narrow.stream
+        topic = self.narrow.topic
+
+        for event in events:
+            if stream is not None and event.message.stream_id != stream.id:
+                continue
+            if topic is not None and event.message.topic_name != topic.name:
+                continue
+            self.topic_views[-1].add_message(event.message)
+
+        self.show_all()
+
+    def on_adjustment_changed(self):
+        adjustment = self.get_vadjustment()
+
+        if self.previous_adjustment_value == self.previous_adjustment_top:
+            adjustment.set_value(adjustment.get_upper() - adjustment.get_page_size())
+
+        self.update_previous_adjustment()
+
+    def on_adjustment_value_changed(self):
+        adjustment = self.get_vadjustment()
+        value = adjustment.get_value()
+        page_size = adjustment.get_page_size()
+
+        if self.brace_for_scrollbar_reset:
+            if not value:
+                adjustment.set_value(self.previous_adjustment_value)
+                return
+            elif value != self.previous_adjustment_value:
+                self.brace_for_scrollbar_reset = False
+        elif page_size and value < page_size and \
+           not self.last_messages.found_oldest and not self.requested_more_messages:
+            self.bus.load_messages(self.account,
+                                   anchor=self.last_messages.messages[0].id,
+                                   narrow=self.narrow)
+            self.requested_more_messages = True
+        elif value > page_size and self.requested_more_messages:
+            self.requested_more_messages = False
+
+        self.update_previous_adjustment()
 
 
 class HeaderBar(Gtk.Grid):
@@ -1075,6 +1307,7 @@ class HeaderBar(Gtk.Grid):
         self.bus = bus
         self.parent = parent
 
+        self.bus.connect('messages-loaded', ignore_first(self.on_messages_loaded))
         self.bus.connect('message-narrow-failed', ignore_first(self.on_narrow_failure))
         self.bus.connect('ui-account-selected', ignore_first(self.on_account_selected))
         self.bus.connect('ui-stream-selected', ignore_first(self.on_stream_selected))
@@ -1092,7 +1325,7 @@ class HeaderBar(Gtk.Grid):
         self.search_field.connect('search-changed', ignore_first(self.update_search))
         self.main_header.pack_end(self.search_field)
 
-        self.search_popover = Gtk.Popover(relative_to=self.search_field)
+        self.search_popover = Gtk.Popover(modal=False, relative_to=self.search_field)
         self.search_error = Gtk.Label(margin=10)
         self.search_error.show()
         self.search_popover.add(self.search_error)
@@ -1109,6 +1342,13 @@ class HeaderBar(Gtk.Grid):
         self.account = None
         self.stream = None
 
+    def reset_error(self):
+        self.search_field.get_style_context().remove_class('error')
+        self.search_popover.popdown()
+
+    def on_messages_loaded(self, account, narrow, anchor, messages):
+        self.reset_error()
+
     def on_narrow_failure(self, account, narrow, error):
         self.search_field.get_style_context().add_class('error')
         self.search_error.set_text(f'Error: {error}')
@@ -1117,16 +1357,22 @@ class HeaderBar(Gtk.Grid):
     def on_account_selected(self, account):
         self.account = account
         self.stream = None
-        self.search_field.get_style_context().remove_class('error')
         self.search_field.set_sensitive(True)
-        self.search_popover.popdown()
+        self.reset_error()
 
         self.stream_header.set_title(account.info.name)
         self.main_header.set_title('')
         self.main_header.set_custom_title(None)
 
+        if self.search_field.get_text():
+            self.update_search()
+
     def on_stream_selected(self, account, stream):
         self.stream = stream
+
+        if stream is None:
+            self.on_account_selected(self.account)
+            return
 
         if stream.description:
             titles = Gtk.Grid()
@@ -1147,11 +1393,15 @@ class HeaderBar(Gtk.Grid):
             self.main_header.set_title(f'#{stream.name}')
         self.main_header.show_all()
 
+        if self.search_field.get_text():
+            self.update_search()
+
     def update_search(self):
         text = self.search_field.get_text()
         if not text:
             if self.stream is not None:
-                self.bus.load_messages(self.account, {'stream': self.stream.name})
+                self.bus.load_messages(self.account,
+                                       narrow=SearchNarrow(stream=self.stream))
                 self.on_stream_selected(self.account, self.stream)
             else:
                 self.bus.load_messages(self.account)
@@ -1162,23 +1412,23 @@ class HeaderBar(Gtk.Grid):
         self.main_header.set_title('Search')
 
         operators = {'has', 'in', 'is', 'stream', 'topic', 'sender', 'near', 'id'}
-        narrow = {}
+        query = {}
         search = []
-
-        if self.stream is not None:
-            narrow['stream'] = self.stream.name
 
         for term in text.split():
             if ':' in term:
                 operator, operand = term.split(':', 1)
                 if operator in operators:
-                    narrow[operator] = operand
+                    query[operator] = operand
                     continue
 
             search.append(term)
 
-        narrow['search'] = ' '.join(search)
-        self.bus.load_messages(self.account, narrow)
+        if search:
+            query['search'] = ' '.join(search)
+
+        narrow = SearchNarrow(stream=self.stream, query=query)
+        self.bus.load_messages(self.account, narrow=narrow)
 
     def on_add_button_click(self):
         account = AccountDialog.get_account_info(self.parent, self.bus)
