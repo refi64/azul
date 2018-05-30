@@ -192,8 +192,8 @@ class SubscribedStreamModel(StreamModel):
 
 @attr.s
 class TopicModel:
-    max_id = attr.ib()
     name = attr.ib()
+    max_id = attr.ib(default=None)
 
     mapping = {
         'max_id': None,
@@ -398,6 +398,23 @@ class LoadMessagesTask(Task):
                                       self.anchor, messages)
 
 
+@attr.s
+class SendMessageTask(Task):
+    account = attr.ib()
+    stream = attr.ib()
+    topic = attr.ib()
+    content = attr.ib()
+
+    def process(self, bus):
+        request = {
+            'type': 'stream',
+            'to': self.stream.name,
+            'subject': self.topic.name,
+            'content': self.content,
+        }
+        self.account.client.send_message(request)
+
+
 class TaskThread(threading.Thread):
     def __init__(self, bus):
         super(TaskThread, self).__init__()
@@ -542,6 +559,9 @@ class EventBus(GObject.Object):
     def load_messages(self, account, **kwargs):
         self._add_task(LoadMessagesTask(account, **kwargs))
 
+    def send_message(self, account, stream, topic, content):
+        self._add_task(SendMessageTask(account, stream, topic, content))
+
     def load_topics_in_stream(self, account, stream):
         self._add_task(LoadTopicsTask(account, stream))
 
@@ -574,7 +594,7 @@ class EventBus(GObject.Object):
     def account_streams_loaded(self, account, streams): pass
 
     @GObject.Signal(name='stream-topics-loaded', arg_types=(object, object, object))
-    def account_topics_loaded(self, account, stream, topics): pass
+    def stream_topics_loaded(self, account, stream, topics): pass
 
     @GObject.Signal(name='messages-loaded', arg_types=(object, object, object, object))
     def messages_loaded(self, account, narrow, anchor, messages): pass
@@ -608,10 +628,9 @@ class AccountDialog(Gtk.Dialog):
         content = self.get_content_area()
         grid = Gtk.Grid(column_spacing=10, row_spacing=10, margin=10)
 
-        self.error_bar = Gtk.InfoBar()
+        self.error_bar = Gtk.InfoBar(show_close_button=True)
         self.error_label = Gtk.Label(label='')
         self.error_bar.get_content_area().add(self.error_label)
-        self.error_bar.add_button('_Close', Gtk.ResponseType.OK)
         self.error_bar.connect('response', lambda *_: self.error_bar.hide())
         self.error_bar.set_message_type(Gtk.MessageType.ERROR)
         grid.attach(self.error_bar, 0, 0, 2, 1)
@@ -1436,7 +1455,145 @@ class HeaderBar(Gtk.Grid):
             self.bus.emit('ui-add-account', account)
 
 
+class MessageEditorInput(Gtk.TextView):
+    def __init__(self, bus, **kwargs):
+        super(MessageEditorInput, self).__init__(editable=True, hexpand=True,
+                                                 **kwargs)
+
+    @GObject.Signal(name='submit', arg_types=(), flags=GObject.SIGNAL_ACTION)
+    def submit(self): pass
+
+
+class MessageEditor(Gtk.Overlay):
+    def __init__(self, bus, **kwargs):
+        super(MessageEditor, self).__init__(sensitive=False, **kwargs)
+        self.bus = bus
+
+        self.bus.connect('account-streams-loaded',
+                         ignore_first(self.on_account_streams_loaded))
+        self.bus.connect('stream-topics-loaded',
+                         ignore_first(self.on_stream_topics_loaded))
+        self.bus.connect('ui-stream-selected', ignore_first(self.on_stream_selected))
+
+        self.input = MessageEditorInput(self.bus)
+        self.add(self.input)
+
+        self.input.connect('submit', ignore_first(self.on_message_submit))
+
+        selector_grid = Gtk.Grid(halign=Gtk.Align.START, valign=Gtk.Align.START)
+
+        self.stream_selector = Gtk.ComboBoxText()
+        self.stream_selector.connect('changed', ignore_first(self.on_stream_changed))
+
+        selector_grid.attach(self.stream_selector, 0, 0, 1, 1)
+
+        self.topic_selector = Gtk.ComboBoxText.new_with_entry()
+        self.topic_selector.connect('changed', ignore_first(self.on_topic_changed))
+
+        self.topic_popover = Gtk.Popover(modal=False, relative_to=self.topic_selector)
+        topic_popover_message = Gtk.Label(label='A topic is required.', margin=10)
+        topic_popover_message.show()
+        self.topic_popover.add(topic_popover_message)
+
+        topic_selector_overlay = Gtk.Overlay()
+        topic_selector_overlay.add(self.topic_selector)
+
+        self.topic_selector_label = Gtk.Label(label='Topic', halign=Gtk.Align.CENTER,
+                                              sensitive=False)
+        topic_selector_overlay.add_overlay(self.topic_selector_label)
+        topic_selector_overlay.set_overlay_pass_through(self.topic_selector_label,
+                                                        True)
+
+        selector_grid.attach(topic_selector_overlay, 1, 0, 1, 1)
+
+        self.add_overlay(selector_grid)
+
+        action_grid = Gtk.Grid(halign=Gtk.Align.END, valign=Gtk.Align.CENTER)
+
+        emoji = Gtk.Button(relief=Gtk.ReliefStyle.NONE,
+                           image=Gtk.Image.new_from_icon_name('face-smile-symbolic',
+                                                              Gtk.IconSize.BUTTON))
+        action_grid.attach(emoji, 0, 0, 1, 1)
+
+        submit = Gtk.Button(label='Submit', relief=Gtk.ReliefStyle.NONE)
+        submit.connect('clicked', ignore_first(self.on_message_submit))
+        action_grid.attach(submit, 1, 0, 1, 1)
+
+        self.add_overlay(action_grid)
+
+    def on_account_streams_loaded(self, account, streams):
+        self.account = account
+        self.streams = streams
+        self.topics = {}
+        self.set_sensitive(True)
+
+        self.stream_selector.remove_all()
+        for stream in streams:
+            self.stream_selector.append(stream, f'#{stream}')
+
+        self.stream_selector.set_active_id(next(iter(streams)))
+
+    def on_stream_topics_loaded(self, account, stream, topics):
+        self.topics[stream.name] = {topic.name: topic for topic in topics}
+        if self.stream_selector.get_active_id() == stream.name:
+            self.on_stream_changed()
+
+    def on_stream_selected(self, account, stream):
+        if stream is not None:
+            self.stream_selector.set_active_id(stream.name)
+
+    def on_stream_changed(self):
+        stream_name = self.stream_selector.get_active_id()
+        if stream_name not in self.topics:
+            return
+
+        self.topic_selector.remove_all()
+        for topic_name in self.topics[stream_name]:
+            self.topic_selector.append_text(topic_name)
+
+    def on_topic_changed(self):
+        empty_topic = not self.topic_selector.get_active_text()
+        self.topic_selector_label.set_visible(empty_topic)
+        self.topic_popover.popdown()
+
+    def on_message_submit(self):
+        stream_name = self.stream_selector.get_active_id()
+        topic_name = self.topic_selector.get_active_text()
+
+        if not topic_name:
+            self.topic_popover.popup()
+            return
+
+        stream = self.streams[stream_name]
+        topic = self.topics[stream_name].get(topic_name, TopicModel(name=topic_name))
+
+        buf = self.input.get_buffer()
+        content = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), True)
+        self.bus.send_message(self.account, stream, topic, content)
+
+        self.input.set_buffer(Gtk.TextBuffer())
+
+
 CSS = b'''
+@binding-set MoveCursor3 {
+  bind "<Control>Return" { "submit" () };
+}
+
+textview {
+  -gtk-key-bindings: MoveCursor3;
+  padding: 40px 20px 20px 20px;
+}
+
+combobox {
+    border: none;
+}
+
+button.combo, entry.combo {
+    background: none;
+    border: none;
+    box-shadow: none;
+    outline: none;
+}
 '''
 
 
@@ -1472,9 +1629,11 @@ class Window(Gtk.ApplicationWindow):
         self.account_messages = {}
         self.account_messages_empty = Gtk.ListBox(expand=True)
 
-        self.grid.attach(self.accounts, 0, 0, 1, 1)
-        self.grid.attach(Gtk.Separator(), 1, 0, 1, 1)
-        self.grid.attach(Gtk.Separator(), 3, 0, 1, 1)
+        self.grid.attach(self.accounts, 0, 0, 1, 3)
+        self.grid.attach(Gtk.Separator(), 1, 0, 1, 3)
+        self.grid.attach(Gtk.Separator(), 3, 0, 1, 3)
+        self.grid.attach(Gtk.Separator(), 4, 1, 1, 1)
+        self.grid.attach(MessageEditor(self.bus), 4, 2, 1, 1)
         self._set_account()
 
     def quit(self, window):
@@ -1501,7 +1660,7 @@ class Window(Gtk.ApplicationWindow):
 
         current_stream.set_size_request(300, 0)
         if previous_stream is not current_stream:
-            self.grid.attach(current_stream, 2, 0, 1, 1)
+            self.grid.attach(current_stream, 2, 0, 1, 3)
             current_stream.clear_selection()
         if previous_messages is not current_messages:
             self.grid.attach(current_messages, 4, 0, 1, 1)
