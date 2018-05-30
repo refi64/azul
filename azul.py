@@ -479,10 +479,10 @@ class EventBus(GObject.Object):
     def ui_add_account(self, account): pass
 
 
-class ServerDialog(Gtk.Dialog):
+class AccountDialog(Gtk.Dialog):
     def __init__(self, parent, account=None):
-        title = 'Add Server' if account is None else 'Edit Server'
-        super(ServerDialog, self).__init__(title, parent, 0,
+        title = 'Add Account' if account is None else 'Edit Account'
+        super(AccountDialog, self).__init__(title, parent, 0,
             ('_Save', Gtk.ResponseType.APPLY, '_Cancel', Gtk.ResponseType.CANCEL))
         self.account = account
         self.set_default_size(500, 0)
@@ -545,7 +545,7 @@ class ServerDialog(Gtk.Dialog):
 
     @staticmethod
     def get_account_info(parent, bus, account=None):
-        dialog = ServerDialog(parent, account)
+        dialog = AccountDialog(parent, account)
         account = None
 
         while True:
@@ -670,8 +670,10 @@ class AccountsView(Gtk.ListBox):
             return False
 
         def on_edit():
-            ServerDialog.get_account_info(self.parent, self.bus, account)
-            self.add_account(account)
+            nonlocal account
+            account = AccountDialog.get_account_info(self.parent, self.bus, account)
+            if account is not None:
+                self.add_account(account)
 
         menu = Gtk.Menu()
         edit = Gtk.MenuItem.new_with_label('Edit Account')
@@ -1179,8 +1181,9 @@ class HeaderBar(Gtk.Grid):
         self.bus.load_messages(self.account, narrow)
 
     def on_add_button_click(self):
-        account = ServerDialog.get_account_info(self.parent, self.bus)
-        self.bus.emit('ui-add-account')
+        account = AccountDialog.get_account_info(self.parent, self.bus)
+        if account is not None:
+            self.bus.emit('ui-add-account', account)
 
 
 CSS = b'''
