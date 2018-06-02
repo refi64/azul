@@ -58,7 +58,7 @@ modules:
       - '*.pyc'
       - __pycache__
       - '*.exe'
-  - python3-zulip.json
+  - requirements.json
   - name: azul
     buildsystem: simple
     build-commands:

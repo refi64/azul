@@ -5,4 +5,5 @@ mistune
 pycairo
 pygments
 pygobject
+requests
 zulip
