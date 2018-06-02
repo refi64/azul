@@ -24,7 +24,7 @@ modules:
       - --with-system-expat
     build-options:
       prefix: /app
-      # no-debuginfo: true
+      no-debuginfo: true
     post-install:
       - chmod 755 /app/lib/libpython*.so*
     cleanup:
@@ -58,10 +58,7 @@ modules:
       - '*.pyc'
       - __pycache__
       - '*.exe'
-  - name: zulip
-    buildsystem: simple
-    build-commands:
-      - python3 -m pip install zulip
+  - python3-zulip.json
   - name: azul
     buildsystem: simple
     build-commands:

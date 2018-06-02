@@ -446,10 +446,8 @@ class TaskThread(threading.Thread):
 
 
 class EventBus(GObject.Object):
-    def __init__(self, window):
+    def __init__(self):
         super(EventBus, self).__init__()
-
-        self.window = window
 
         self.settings = Gio.Settings(APP_ID)
 
@@ -1609,42 +1607,12 @@ class MessageEditor(Gtk.Overlay):
         self.input.set_buffer(Gtk.TextBuffer())
 
 
-CSS = b'''
-@binding-set Submit {
-  bind "<Control>Return" { "submit" () };
-}
-
-textview {
-  -gtk-key-bindings: Submit;
-  padding: 40px 20px 20px 20px;
-}
-
-combobox {
-    border: none;
-}
-
-button.combo, entry.combo {
-    background: none;
-    border: none;
-    box-shadow: none;
-    outline: none;
-}
-'''
-
-
 class Window(Gtk.ApplicationWindow):
     LOADING = object()
 
-    def __init__(self):
-        super(Window, self).__init__(title='Azul')
-        self.bus = EventBus(self)
-
-        style_provider = Gtk.CssProvider()
-        style_provider.load_from_data(CSS)
-
-        Gtk.StyleContext.add_provider_for_screen(
-            Gdk.Screen.get_default(), style_provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    def __init__(self, bus, **kw):
+        super(Window, self).__init__(title='Azul', **kw)
+        self.bus = bus
 
         self.set_default_size(1400, 800)
 
@@ -1671,9 +1639,10 @@ class Window(Gtk.ApplicationWindow):
         self.grid.attach(MessageEditor(self.bus), 4, 2, 1, 1)
         self._set_account()
 
+        self.show_all()
+
     def quit(self, window):
         self.bus.quit()
-        Gtk.main_quit()
 
     def _set_account(self, server=None):
         if server is None or server is self.LOADING:
@@ -1716,8 +1685,123 @@ class Window(Gtk.ApplicationWindow):
         self._set_account(account.server)
 
 
+class Application(Gtk.Application):
+    CSS = b'''
+    @binding-set Submit {
+      bind "<Control>Return" { "submit" () };
+    }
+
+    textview {
+      -gtk-key-bindings: Submit;
+      padding: 40px 20px 20px 20px;
+    }
+
+    combobox {
+        border: none;
+    }
+
+    button.combo, entry.combo {
+        background: none;
+        border: none;
+        box-shadow: none;
+        outline: none;
+    }
+    '''
+
+    MENU_XML = '''
+    <?xml version="1.0" encoding="UTF-8"?>
+
+    <interface>
+        <menu id="app-menu">
+            <section>
+                <item>
+                    <attribute name="action">app.about</attribute>
+                    <attribute name="label" translatable="yes">_About</attribute>
+                </item>
+                <item>
+                    <attribute name="action">app.quit</attribute>
+                    <attribute name="label" translatable="yes">_Quit</attribute>
+                    <attribute name="accel">&lt;Primary&gt;q</attribute>
+                </item>
+            </section>
+        </menu>
+    </interface>
+    '''
+
+    def __init__(self, bus, **kw):
+        super(Application, self).__init__(
+            application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE,
+            **kw)
+        self.bus = bus
+        self.window = None
+
+        self.bus.connect('account-streams-loaded',
+                         ignore_first(self.on_account_streams_loaded))
+        self.bus.connect('message-events', ignore_first(self.on_message_events))
+
+    def on_account_streams_loaded(self, account, streams):
+        pass
+
+    def on_message_events(self, account, events):
+        suffix = '(s)' if len(events) > 1 else ''
+        body = []
+
+        for event in events:
+            message = event.message
+            body.append(f'<b>{message.sender_name} in {message.topic_name}</b>: {message.content}')
+
+        print('\n'.join(body))
+
+        notification = Gio.Notification.new(f'New message{suffix} in {account.info.name}')
+        notification.set_body('\n'.join(body))
+        notification.set_priority(Gio.NotificationPriority.HIGH)
+        self.send_notification('id', notification)
+
+    def do_startup(self):
+        Gtk.Application.do_startup(self)
+
+        style_provider = Gtk.CssProvider()
+        style_provider.load_from_data(self.CSS)
+
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(), style_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        about_action = Gio.SimpleAction.new('about', None)
+        about_action.connect('activate', self.on_about)
+        self.add_action(about_action)
+
+        quit_action = Gio.SimpleAction.new('quit', None)
+        quit_action.connect('activate', self.on_quit)
+        self.add_action(quit_action)
+
+        builder = Gtk.Builder.new_from_string(self.MENU_XML, -1)
+        self.set_app_menu(builder.get_object('app-menu'))
+
+    def do_activate(self):
+        if self.window is None:
+            self.window = Window(self.bus, application=self)
+
+        self.window.present()
+
+    def do_command_line(self, cmdline):
+        self.activate()
+        return 0
+
+    def on_about(self, action, data):
+        about_dialog = Gtk.AboutDialog(transient_for=self.window, modal=True)
+        about_dialog.present()
+
+    def on_quit(self, action, data):
+        self.quit()
+
+
+def main():
+    bus = EventBus()
+    app = Application(bus)
+    app.run(sys.argv)
+    bus.quit()
+
+
 if __name__ == '__main__':
-    win = Window()
-    win.connect('destroy', win.quit)
-    win.show_all()
-    Gtk.main()
+    main()
