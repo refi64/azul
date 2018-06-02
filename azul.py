@@ -16,10 +16,12 @@ from gi.repository import GLib, GObject, Gio, Gdk, GdkPixbuf, Gtk
 import cairo
 
 import attr
+import ctypes
 import functools
 import gevent.os
 import gevent.pool
 import greenlet
+import inspect
 import io
 import keyring
 import math
@@ -30,7 +32,9 @@ import pygments.lexers
 import pygments.util
 import queue
 import requests
+import signal
 import sys
+import syslog
 import threading
 import traceback
 import urllib.parse
@@ -57,6 +61,56 @@ def construct_with_mapped_args(ty, data, **kw):
 
 class ValidationError(Exception):
     pass
+
+
+class GLog:
+    _SYSLOG_PRIORITIES = {
+        'debug': syslog.LOG_DEBUG,
+        'info': syslog.LOG_INFO,
+        'message': syslog.LOG_NOTICE,
+        'warning': syslog.LOG_WARNING,
+        'critical': syslog.LOG_WARNING,
+        'error': syslog.LOG_ERR,
+    }
+
+    PRIORITIES = {level: ctypes.create_string_buffer(str(n).encode('utf-8'))
+                  for level, n in _SYSLOG_PRIORITIES.items()}
+
+    @classmethod
+    def log(cls, level, message, frame=2):
+        glevel = getattr(GLib.LogLevelFlags, f'LEVEL_{level.upper()}')
+        preserve = []
+
+        def make_field(key, value):
+            if not isinstance(value, ctypes.Array):
+                value = ctypes.create_string_buffer(value.encode('utf-8'))
+                preserve.append(value)
+
+            field = GLib.LogField()
+            field.key = key
+            field.value = ctypes.addressof(value)
+            field.length = len(value)
+            return field
+
+        frame_info = inspect.stack()[frame]
+
+        fields = [
+            make_field('PRIORITY', cls.PRIORITIES[level]),
+            make_field('CODE_FILE', frame_info.filename),
+            make_field('CODE_LINE', str(frame_info.lineno)),
+            make_field('CODE_FUNC', frame_info.function),
+            make_field('MESSAGE', message),
+        ]
+        GLib.log_structured_array(glevel, fields)
+
+
+def g_log(level, message): GLog.log(level, message)
+def g_debug(message): GLog.log('debug', message)
+def g_info(message): GLog.log('info', message)
+def g_message(message): GLog.log('message', message)
+def g_warning(message): GLog.log('warning', message)
+def g_error(message): GLog.log('error', message)
+def g_critical(message): GLog.log('critical', message)
 
 
 @attr.s
@@ -131,6 +185,8 @@ class EventModel:
         if data['type'] == 'message':
             return MessageEventModel.from_data(data)
         else:
+            if data['type'] != 'heartbeat':
+                g_warning(f'Unknown event: {data}')
             return construct_with_mapped_args(EventModel, data)
 
 
@@ -310,7 +366,7 @@ class LoadAccountTask(Task):
             self.account.info.icon_url)
         self.account.info.icon = requests.get(self.account.info.icon_url).content
 
-        queue = self.account.client.register(event_types=['message'])
+        queue = self.account.client.register(event_types=['message', 'typing'])
         self.account.queue = AccountQueueModel.from_data(queue)
 
         bus.emit_from_main_thread('account-loaded', self.account)
@@ -1544,8 +1600,6 @@ class MessageEditor(Gtk.Overlay):
         self.stream_selector.remove_all()
         for stream in streams:
             self.stream_selector.append(stream, f'#{stream}')
-
-        self.stream_selector.set_active_id(next(iter(streams)))
 
     def on_stream_topics_loaded(self, account, stream, topics):
         self.stream_topics[stream.name] = {topic.name: topic for topic in topics}
