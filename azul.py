@@ -608,8 +608,11 @@ class EventBus(GObject.Object):
     @GObject.Signal(name='ui-account-selected', arg_types=(object,))
     def ui_account_selected(self, account): pass
 
-    @GObject.Signal(name='ui-stream-selected', arg_types=(object, object,))
+    @GObject.Signal(name='ui-stream-selected', arg_types=(object, object))
     def ui_stream_selected(self, account, stream): pass
+
+    @GObject.Signal(name='ui-topic-view-selected', arg_types=(object, object, object))
+    def ui_topic_view_selected(self, account, stream_id, topic_name): pass
 
     @GObject.Signal(name='ui-add-account', arg_types=(object,))
     def ui_add_account(self, account): pass
@@ -1143,10 +1146,11 @@ class MessagesFromSenderView(Gtk.Grid):
 
 
 class TopicView(Gtk.Grid):
-    def __init__(self, bus, account, name, **kwargs):
+    def __init__(self, bus, account, stream_id, name, **kwargs):
         super(TopicView, self).__init__(**kwargs)
         self.bus = bus
         self.account = account
+        self.stream_id = stream_id
         self.name = name
         self.messages = []
 
@@ -1177,13 +1181,11 @@ class MessagesView(Gtk.ScrolledWindow):
         self.bus = bus
         self.account = account
         self.narrow = None
+        self.listbox = None
         self.last_messages = None
         self.topic_views = []
         self.requested_more_messages = False
         self.brace_for_scrollbar_reset = False
-
-        self.listbox = Gtk.ListBox(expand=True)
-        self.add(self.listbox)
 
         self.bus.connect('messages-loaded', ignore_first(self.on_messages_loaded))
         self.bus.connect('message-events', ignore_first(self.on_message_events))
@@ -1205,9 +1207,11 @@ class MessagesView(Gtk.ScrolledWindow):
         if account is not self.account:
             return
 
-        if narrow != self.narrow:
-            self.remove(self.listbox)
+        if narrow != self.narrow or self.listbox is None:
+            if self.listbox is not None:
+                self.remove(self.listbox)
             self.listbox = Gtk.ListBox(expand=True)
+            self.listbox.connect('row-activated', ignore_first(self.on_row_activated))
             self.listbox.set_selection_mode(Gtk.SelectionMode.NONE)
             self.add(self.listbox)
 
@@ -1234,9 +1238,11 @@ class MessagesView(Gtk.ScrolledWindow):
 
         for message in messages.messages:
             if topic_view is None or topic_view.name != message.topic_name:
-                topic_view = TopicView(self.bus, account, message.topic_name)
+                topic_view = TopicView(self.bus, account, message.stream_id,
+                                       message.topic_name)
                 self.listbox.insert(topic_view, topic_view_insert_position)
                 self.topic_views.insert(topic_view_insert_position, topic_view)
+
                 topic_view_insert_position += 1
 
             topic_view.add_message(message)
@@ -1254,6 +1260,11 @@ class MessagesView(Gtk.ScrolledWindow):
             self.requested_more_messages = False
 
         self.show_all()
+
+    def on_row_activated(self, row):
+        topic_view = row.get_child()
+        self.bus.emit('ui-topic-view-selected', self.account, topic_view.stream_id,
+                      topic_view.name)
 
     def on_listbox_size_allocate(self, signal_id, original_first, original_position):
         new_position = original_first.get_allocation().y
@@ -1468,12 +1479,16 @@ class MessageEditor(Gtk.Overlay):
     def __init__(self, bus, **kwargs):
         super(MessageEditor, self).__init__(sensitive=False, **kwargs)
         self.bus = bus
+        self.stream_topics = {}
 
         self.bus.connect('account-streams-loaded',
                          ignore_first(self.on_account_streams_loaded))
         self.bus.connect('stream-topics-loaded',
                          ignore_first(self.on_stream_topics_loaded))
+        self.bus.connect('messages-loaded', ignore_first(self.on_messages_loaded))
         self.bus.connect('ui-stream-selected', ignore_first(self.on_stream_selected))
+        self.bus.connect('ui-topic-view-selected',
+                         ignore_first(self.on_topic_view_selected))
 
         self.input = MessageEditorInput(self.bus)
         self.add(self.input)
@@ -1524,7 +1539,8 @@ class MessageEditor(Gtk.Overlay):
     def on_account_streams_loaded(self, account, streams):
         self.account = account
         self.streams = streams
-        self.topics = {}
+        self.streams_by_id = {stream.id: stream for stream in streams.values()}
+        self.stream_topics = {}
         self.set_sensitive(True)
 
         self.stream_selector.remove_all()
@@ -1534,7 +1550,7 @@ class MessageEditor(Gtk.Overlay):
         self.stream_selector.set_active_id(next(iter(streams)))
 
     def on_stream_topics_loaded(self, account, stream, topics):
-        self.topics[stream.name] = {topic.name: topic for topic in topics}
+        self.stream_topics[stream.name] = {topic.name: topic for topic in topics}
         if self.stream_selector.get_active_id() == stream.name:
             self.on_stream_changed()
 
@@ -1542,14 +1558,32 @@ class MessageEditor(Gtk.Overlay):
         if stream is not None:
             self.stream_selector.set_active_id(stream.name)
 
+    def on_topic_view_selected(self, account, stream_id, topic_name):
+        self.stream_selector.set_active_id(self.streams_by_id[stream_id].name)
+        self.on_stream_changed()
+        self.topic_selector.set_active_id(topic_name)
+
+    def on_messages_loaded(self, account, narrow, anchor, messages):
+        latest_message = messages.messages[-1]
+        stream = self.streams_by_id[latest_message.stream_id]
+
+        self.stream_selector.set_active_id(stream.name)
+        self.on_stream_changed()
+        self.topic_selector.set_active_id(latest_message.topic_name)
+
     def on_stream_changed(self):
         stream_name = self.stream_selector.get_active_id()
-        if stream_name not in self.topics:
+        if stream_name not in self.stream_topics:
             return
+        topics = self.stream_topics[stream_name]
 
         self.topic_selector.remove_all()
-        for topic_name in self.topics[stream_name]:
-            self.topic_selector.append_text(topic_name)
+        for topic_name in topics:
+            self.topic_selector.append(topic_name, topic_name)
+
+        if self.topic_selector.get_active_text() not in topics:
+            self.topic_selector.set_active_id(None)
+            self.topic_selector.get_child().set_text('')
 
     def on_topic_changed(self):
         empty_topic = not self.topic_selector.get_active_text()
@@ -1565,7 +1599,8 @@ class MessageEditor(Gtk.Overlay):
             return
 
         stream = self.streams[stream_name]
-        topic = self.topics[stream_name].get(topic_name, TopicModel(name=topic_name))
+        topic = self.stream_topics[stream_name].get(topic_name,
+                                                    TopicModel(name=topic_name))
 
         buf = self.input.get_buffer()
         content = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), True)
@@ -1575,12 +1610,12 @@ class MessageEditor(Gtk.Overlay):
 
 
 CSS = b'''
-@binding-set MoveCursor3 {
+@binding-set Submit {
   bind "<Control>Return" { "submit" () };
 }
 
 textview {
-  -gtk-key-bindings: MoveCursor3;
+  -gtk-key-bindings: Submit;
   padding: 40px 20px 20px 20px;
 }
 
