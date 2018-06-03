@@ -262,6 +262,23 @@ class TopicModel:
 
 
 @attr.s
+class ReactionModel:
+    code = attr.ib()
+    type = attr.ib()
+    name = attr.ib()
+
+    mapping = {
+        'emoji_code': 'code',
+        'emoji_name': 'name',
+        'reaction_type': 'type',
+    }
+
+    @staticmethod
+    def from_data(data):
+        return construct_with_mapped_args(ReactionModel, data)
+
+
+@attr.s
 class MessageModel:
     id = attr.ib()
     type = attr.ib()
@@ -269,6 +286,7 @@ class MessageModel:
     sender_avatar = attr.ib()
     sender_id = attr.ib()
     topic_name = attr.ib()
+    reactions = attr.ib()
     content = attr.ib(repr=False)
     stream_id = attr.ib(default=None)
 
@@ -285,7 +303,8 @@ class MessageModel:
 
     @staticmethod
     def from_data(data):
-        return construct_with_mapped_args(MessageModel, data)
+        reactions = list(map(ReactionModel.from_data, data['reactions']))
+        return construct_with_mapped_args(MessageModel, data, reactions=reactions)
 
 
 @attr.s
@@ -302,7 +321,8 @@ class MessagesModel:
     @staticmethod
     def from_data(data):
         messages = list(map(MessageModel.from_data, data['messages']))
-        return construct_with_mapped_args(MessagesModel, data, messages=messages)
+        return construct_with_mapped_args(MessagesModel, data,
+                                          messages=messages)
 
 
 @attr.s
@@ -509,12 +529,17 @@ class EventBus(GObject.Object):
 
         self.connect('api-key-retrieved', ignore_first(self.on_api_key_retrieved))
         self.connect('account-loaded', ignore_first(self.on_account_loaded))
+        self.connect('data-loaded', ignore_first(self.on_data_loaded))
 
         self._thread = TaskThread(self)
         self._thread.start()
 
         self._accounts = {}
         self._load_accounts()
+
+        self._cache = {}
+        self._cache_loading = object()
+        self._cache_lock = threading.Lock()
 
     def quit(self):
         self._thread.quit()
@@ -604,8 +629,20 @@ class EventBus(GObject.Object):
         else:
             self._add_task(LoadAccountTask(account))
 
-    def load_data_from_url(self, account, url):
+    def load_uncached_data_from_url(self, account, url):
         self._add_task(LoadDataTask(account, url))
+
+    def load_data_from_url(self, account, url):
+        with self._cache_lock:
+            if url in self._cache:
+                data = self._cache[url]
+                if data is self._cache_loading:
+                    return
+
+                self.emit('data-loaded', url, self._cache[url])
+            else:
+                self._cache[url] = self._cache_loading
+                self.load_uncached_data_from_url(account, url)
 
     def load_streams_for_account(self, account):
         self._add_task(LoadStreamsTask(account))
@@ -625,6 +662,11 @@ class EventBus(GObject.Object):
 
     def on_account_loaded(self, account):
         self._add_task(MonitorAccountEventsTask(account))
+
+    def on_data_loaded(self, url, data):
+        with self._cache_lock:
+            if self._cache.get(url) is self._cache_loading:
+                self._cache[url] = data
 
     @GObject.Signal(name='size-sync', arg_types=(object, object))
     def size_sync(self, name, size): pass
@@ -1803,8 +1845,6 @@ class Application(Gtk.Application):
         for event in events:
             message = event.message
             body.append(f'<b>{message.sender_name} in {message.topic_name}</b>: {message.content}')
-
-        print('\n'.join(body))
 
         notification = Gio.Notification.new(f'New message{suffix} in {account.info.name}')
         notification.set_body('\n'.join(body))
