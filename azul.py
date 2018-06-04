@@ -45,7 +45,7 @@ import urllib.parse
 import zulip
 
 
-APP_ID = 'com.refi64.azul'
+APP_ID = 'com.refi64.Azul'
 
 
 def ignore_first(func):
@@ -358,9 +358,14 @@ class GetApiKeyTask(Task):
 
     def process(self, bus):
         client = zulip.Client(site=self.account.server, email='', api_key='')
-        result = client.call_endpoint(url='fetch_api_key', method='POST',
-                                      request={'username': self.account.email,
-                                               'password': self.password})
+        try:
+            result = client.call_endpoint(url='fetch_api_key', method='POST',
+                                          request={'username': self.account.email,
+                                                   'password': self.password})
+        except zulip.ZulipError as ex:
+            bus.emit_from_main_thread('login-failed', self.account, str(ex))
+            return
+
         if result['result'] == 'error':
             bus.emit_from_main_thread('login-failed', self.account, result['msg'])
         else:

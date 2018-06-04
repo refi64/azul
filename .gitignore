@@ -1,2 +1,6 @@
 misc/gschemas.compiled
-azul.glade~
+.flatpak-builder/
+flatpak/repo/
+flatpak/root/
+dist/
+azul.egg-info/

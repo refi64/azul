@@ -1,8 +1,8 @@
 {
-    "name": "python3-attrs",
+    "name": "requirements",
     "buildsystem": "simple",
     "build-commands": [
-        "pip3 install --no-index --find-links=\"file://${PWD}\" --prefix=${FLATPAK_DEST} attrs keyring mistune pygments zulip"
+        "pip3 install --no-build-isolation --no-build-isolation --no-index --find-links=\"file://${PWD}\" --prefix=${FLATPAK_DEST} attrs gevent keyring mistune pycairo pygments pygobject requests zulip"
     ],
     "sources": [
         {
@@ -24,26 +24,6 @@
             "type": "file",
             "url": "https://files.pythonhosted.org/packages/a7/d7/eeb3cc66469e21843748e9b8f196eefd42fc81ea43191715e8ec54fee4df/pbr-4.0.3.tar.gz",
             "sha256": "6874feb22334a1e9a515193cba797664e940b763440c88115009ec323a7f2df5"
-        },
-        {
-            "type": "file",
-            "url": "https://files.pythonhosted.org/packages/4d/9c/46e950a6f4d6b4be571ddcae21e7bc846fcbb88f1de3eff0f6dd0a6be55d/certifi-2018.4.16.tar.gz",
-            "sha256": "13e698f54293db9f89122b0581843a782ad0934a4fe0172d2a980ba77fc61bb7"
-        },
-        {
-            "type": "file",
-            "url": "https://files.pythonhosted.org/packages/ee/11/7c59620aceedcc1ef65e156cc5ce5a24ef87be4107c2b74458464e437a5d/urllib3-1.22.tar.gz",
-            "sha256": "cc44da8e1145637334317feebd728bd869a35285b93cbb4cca2577da7e62db4f"
-        },
-        {
-            "type": "file",
-            "url": "https://files.pythonhosted.org/packages/f4/bd/0467d62790828c23c47fc1dfa1b1f052b24efdf5290f071c7a91d0d82fd3/idna-2.6.tar.gz",
-            "sha256": "2c6a5de3089009e3da7c5dde64a141dbc8551d5b7f6cf4ed7c2568d0cc520a8f"
-        },
-        {
-            "type": "file",
-            "url": "https://files.pythonhosted.org/packages/fc/bb/a5768c230f9ddb03acc9ef3f0d4a3cf93462473795d18e9535498c8f929d/chardet-3.0.4.tar.gz",
-            "sha256": "84ab92ed1c4d4f16916e05906b6b75a6c0fb5db821cc65e70cbd64a3e2a5eaae"
         },
         {
             "type": "file",
@@ -72,8 +52,23 @@
         },
         {
             "type": "file",
-            "url": "https://files.pythonhosted.org/packages/b0/e1/eab4fc3752e3d240468a8c0b284607899d2fbfb236a56b7377a329aa8d09/requests-2.18.4.tar.gz",
-            "sha256": "9c443e7324ba5b85070c4a818ade28bfabedf16ea10206da1132edaa6dda237e"
+            "url": "https://files.pythonhosted.org/packages/4d/9c/46e950a6f4d6b4be571ddcae21e7bc846fcbb88f1de3eff0f6dd0a6be55d/certifi-2018.4.16.tar.gz",
+            "sha256": "13e698f54293db9f89122b0581843a782ad0934a4fe0172d2a980ba77fc61bb7"
+        },
+        {
+            "type": "file",
+            "url": "https://files.pythonhosted.org/packages/ee/11/7c59620aceedcc1ef65e156cc5ce5a24ef87be4107c2b74458464e437a5d/urllib3-1.22.tar.gz",
+            "sha256": "cc44da8e1145637334317feebd728bd869a35285b93cbb4cca2577da7e62db4f"
+        },
+        {
+            "type": "file",
+            "url": "https://files.pythonhosted.org/packages/f4/bd/0467d62790828c23c47fc1dfa1b1f052b24efdf5290f071c7a91d0d82fd3/idna-2.6.tar.gz",
+            "sha256": "2c6a5de3089009e3da7c5dde64a141dbc8551d5b7f6cf4ed7c2568d0cc520a8f"
+        },
+        {
+            "type": "file",
+            "url": "https://files.pythonhosted.org/packages/fc/bb/a5768c230f9ddb03acc9ef3f0d4a3cf93462473795d18e9535498c8f929d/chardet-3.0.4.tar.gz",
+            "sha256": "84ab92ed1c4d4f16916e05906b6b75a6c0fb5db821cc65e70cbd64a3e2a5eaae"
         },
         {
             "type": "file",
@@ -87,13 +82,33 @@
         },
         {
             "type": "file",
+            "url": "https://files.pythonhosted.org/packages/13/de/ba92335e9e76040ca7274224942282a80d54f85e342a5e33c5277c7f87eb/greenlet-0.4.13.tar.gz",
+            "sha256": "0fef83d43bf87a5196c91e73cb9772f945a4caaff91242766c5916d1dd1381e4"
+        },
+        {
+            "type": "file",
             "url": "https://files.pythonhosted.org/packages/96/52/f46c3879e0c6962a3bc8ee852face577c093e7db4eef8cd11f64e3b453cd/zulip-0.4.0.tar.gz",
             "sha256": "70b24a8597d11f60edde1e2293dc59848797c251cb251c93b9acdaa4b87fb49a"
         },
         {
             "type": "file",
+            "url": "https://files.pythonhosted.org/packages/b0/e1/eab4fc3752e3d240468a8c0b284607899d2fbfb236a56b7377a329aa8d09/requests-2.18.4.tar.gz",
+            "sha256": "9c443e7324ba5b85070c4a818ade28bfabedf16ea10206da1132edaa6dda237e"
+        },
+        {
+            "type": "file",
+            "url": "https://files.pythonhosted.org/packages/e0/e8/1e4f21800015a9ca153969e85fc29f7962f8f82fc5dbc1ecbdeb9dc54c75/PyGObject-3.28.3.tar.gz",
+            "sha256": "250fb669b6ac64eba034cc4404fcbcc993717b1f77c29dff29f8c9202da20d55"
+        },
+        {
+            "type": "file",
             "url": "https://files.pythonhosted.org/packages/71/2a/2e4e77803a8bd6408a2903340ac498cb0a2181811af7c9ec92cb70b0308a/Pygments-2.2.0.tar.gz",
             "sha256": "dbae1046def0efb574852fab9e90209b23f556367b5a320c0bcb871c77c3e8cc"
+        },
+        {
+            "type": "file",
+            "url": "https://files.pythonhosted.org/packages/60/47/d335364f0ca00e475a40a5a664f17691bf77b3973f999b157d56ee89e04a/pycairo-1.17.0.tar.gz",
+            "sha256": "cdd4d1d357325dec3a21720b85d273408ef83da5f15c184f2eff3212ff236b9f"
         },
         {
             "type": "file",
@@ -104,6 +119,11 @@
             "type": "file",
             "url": "https://files.pythonhosted.org/packages/d8/07/e862b57168e088f3ba880fba2471f05f78c19e75b1632be0143d116e7fa3/keyring-12.2.1.tar.gz",
             "sha256": "4498eaa2e32fc69a8b36749116b670c379d36a1a9ad4ab107df1e19c8a120ffe"
+        },
+        {
+            "type": "file",
+            "url": "https://files.pythonhosted.org/packages/a4/5b/12d4fb2e48634b34537ae250e958de426811f876fbacb2a2041f2af147d8/gevent-1.3.2.post0.tar.gz",
+            "sha256": "5eeec334778cbad059b54fc468b0690db6794fe12a1dada7b70924d1c9ffbeac"
         },
         {
             "type": "file",
