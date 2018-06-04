@@ -6,6 +6,8 @@ command: /app/bin/azul.sh
 finish-args:
   - --socket=x11
   - --share=network
+  - --talk-name=org.freedesktop.secrets
+  - --talk-name=ca.desrt.dconf
 modules:
   - name: python
     sources:
