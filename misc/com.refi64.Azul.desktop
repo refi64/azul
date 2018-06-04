@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Azul
+Comment=A native, GTK+-powered Zulip desktop client
+Exec=azul
+Terminal=false
+Type=Application
+StartupNotify=true
+Icon=com.refi64.Azul
+Categories=Network;
+Keywords=Azul;Zulip;

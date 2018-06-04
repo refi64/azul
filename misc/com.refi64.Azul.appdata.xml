@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop">
+  <id>com.refi64.Azul.desktop</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MPL-2.0</project_license>
+  <name>Azul</name>
+  <summary>A native, GTK+-powered Zulip desktop client</summary>
+  <description>
+   <p>
+    A native, GTK+-powered Zulip desktop client. Still a work in progress, but it can
+    already connect to servers, read and search messages, and send new messages.
+   </p>
+  </description>
+  <screenshots>
+    <screenshot type="default">
+      <image width="1048" height="480">
+        http://howl.io/images/screenshots/monokai/buffer-replace.png
+      </image>
+    </screenshot>
+  </screenshots>
+  <url type="homepage">https://github.com/kirbyfan64/azul</url>
+  <updatecontact>rymg19@gmail.com</updatecontact>
+</component>

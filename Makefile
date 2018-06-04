@@ -21,3 +21,20 @@ flatpak/azul.yaml: sdist
 
 flatpak: flatpak/requirements.json flatpak/azul.yaml
 	cd flatpak; flatpak-builder --repo=repo --force-clean root com.refi64.Azul.yaml
+
+icon:
+	@rm -rf misc/icons
+	@mkdir -p misc/icons
+	inkscape -z misc/icon.svg -e misc/icons/full.png
+	@set -e; for size in 16 22 24 32 48 64 128 256; do \
+		radius=`expr $$size / 2`; \
+		mkdir -p misc/icons/$${size}x$$size; \
+		( \
+			set -x; \
+			magick misc/icons/full.png -resize $${size}x$${size} \
+				\(  -size $${size}x$$size xc:none -fill white \
+					-draw "circle $$radius,$$radius $$radius,0" -alpha copy \) \
+				-compose copy_opacity -composite \
+				misc/icons/$${size}x$$size/com.refi64.Azul.png \
+		); \
+	done

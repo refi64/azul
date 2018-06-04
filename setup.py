@@ -16,6 +16,14 @@ class PostInstallCommand(setuptools.command.install.install):
 with open('README.md') as fp:
     long_description = fp.read()
 
+icon_files = []
+for item in os.listdir('misc/icons'):
+    if 'x' not in item:
+        continue
+
+    icon_files.append((f'share/icons/hicolor/{item}/apps',
+                       [f'misc/icons/{item}/com.refi64.Azul.png']))
+
 setuptools.setup(
     name='azul',
     version='0.1.0',
@@ -30,7 +38,10 @@ setuptools.setup(
         'console_scripts': ['azul = azul:main']
     },
     data_files=[
+        ('share/applications', ['misc/com.refi64.Azul.desktop']),
+        ('share/appdata', ['misc/com.refi64.Azul.appdata.xml']),
         ('share/glib-2.0/schemas', ['misc/com.refi64.Azul.gschema.xml']),
+        *icon_files
     ],
     cmdclass={
         'install': PostInstallCommand,

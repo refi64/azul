@@ -1,19 +1,31 @@
-app-id: com.refi64.Azul
+app-id: com.refi64.Azul.nightly
 runtime: org.gnome.Platform
 runtime-version: 3.28
 sdk: org.gnome.Sdk
 command: /app/bin/azul.sh
+tags: [nightly]
+desktop-file-name-prefix: '(Nightly) '
+rename-appdata-file: com.refi64.Azul
+rename-desktop-file: com.refi64.Azul.desktop
+rename-icon: com.refi64.Azul
 finish-args:
   - --socket=x11
+  - --socket=wayland
+  - --filesystem=home
+  - --filesystem=host
+  - --filesystem=xdg-run/dconf
+  - --filesystem=~/.config/dconf:ro
   - --share=network
+  - --own-name=com.refi64.Azul
   - --talk-name=org.freedesktop.secrets
   - --talk-name=ca.desrt.dconf
+  - --env=DCONF_USER_CONFIG_DIR=.config/dconf
 modules:
   - name: python
     sources:
       - type: archive
-        url: https://www.python.org/ftp/python/3.6.4/Python-3.6.4.tar.xz
-        sha256: 159b932bf56aeaa76fd66e7420522d8c8853d486b8567c459b84fe2ed13bcaba
+        url: https://www.python.org/ftp/python/3.6.5/Python-3.6.5.tgz
+        sha256: 53a3e17d77cd15c5230192b6a8c1e031c07cd9f34a2f089a731c6f6bd343d5c6
     config-opts:
       - --enable-shared
       - --enable-optimizations
