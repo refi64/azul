@@ -20,8 +20,8 @@ script:
   - env | grep 'TRAVIS\|encrypted' > travis.env
   - >
       docker run --env-file travis.env -it --rm
-        --mount type=bind,source=$PWD/travis/run.sh,target=/run.sh
-        flatpak/flatpak-builder:gnome-3-28 /run.sh
+      --mount type=bind,source=$PWD/travis/run.sh,target=/run.sh
+      flatpak/flatpak-builder:gnome-3-28 /run.sh
 
 cache:
   directories:
