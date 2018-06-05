@@ -8,7 +8,7 @@ dnf install -y gnupg make openssl
 dnf update -y flatpak-builder
 
 mkdir -p ~/.ssh
-openssl aes-256-cbc -K $encrypted_942ba5796743_key -iv $encrypted_942ba5796743_iv -in flatpak/secrets.tar.enc -out secrets.tar -d
+openssl aes-256-cbc -K $encrypted_942ba5796743_key -iv $encrypted_942ba5796743_iv -in travis/secrets.tar.enc -out secrets.tar -d
 tar xf secrets.tar
 
 gpg --import secret.gpg
