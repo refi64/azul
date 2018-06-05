@@ -1,4 +1,5 @@
 FLATPAK_BUILDER=flatpak-builder
+FLATPAK_REPO=repo
 PYTHON=python3
 INKSCAPE=inkscape
 MAGICK=magick
@@ -26,7 +27,7 @@ flatpak/azul.yaml: sdist
 	echo '    sha256: '`sha256sum dist/azul*.tar.gz | awk '{print $$1}'` >> $@
 
 flatpak: flatpak/requirements.json flatpak/azul.yaml
-	cd flatpak; $(FLATPAK_BUILDER) --repo=repo --force-clean root com.refi64.Azul.yaml
+	cd flatpak; $(FLATPAK_BUILDER) --repo=$(FLATPAK_REPO) --force-clean root com.refi64.Azul.yaml
 
 icon:
 	@rm -rf misc/icons

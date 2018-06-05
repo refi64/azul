@@ -14,8 +14,3 @@ script:
       docker run --privileged --env-file travis.env -it --rm
       --mount type=bind,source=$PWD,target=/workspace
       flatpak/flatpak-builder:gnome-3-28 /workspace/travis/run.sh
-
-cache:
-  directories:
-    - ~/docker
-  timeout: 1000
