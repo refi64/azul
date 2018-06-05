@@ -9,7 +9,7 @@ before_script:
   - |
       ls ~/docker
       if [[ -f ~/docker/flatpak.tgz ]]; then
-        (set -x; zcat ~/docker/flatpak.tgz | docker load)
+        (set -x; gunzip -c ~/docker/flatpak.tgz | docker load)
       else
         (set -x;
          docker pull flatpak/flatpak-builder:gnome-3-28;
