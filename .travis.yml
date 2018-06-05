@@ -7,13 +7,12 @@ language: generic
 before_script:
   - mkdir -p ~/docker
   - |
-      ls ~/docker
-      if [[ -f ~/docker/flatpak.tgz ]]; then
-        (set -x; gunzip -c ~/docker/flatpak.tgz | docker load)
+      if [[ -f ~/docker/flatpak-image ]]; then
+        (set -x; docker load -i ~/docker/flatpak-image)
       else
         (set -x;
          docker pull flatpak/flatpak-builder:gnome-3-28;
-         docker save flatpak/flatpak-builder:gnome-3-28 | gzip -c > ~/docker/flatpak.tgz)
+         docker save -o ~/docker/flatpak-image flatpak/flatpak-builder:gnome-3-28)
       fi
 
 script:
