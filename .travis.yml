@@ -6,14 +6,7 @@ language: generic
 
 before_script:
   - mkdir -p ~/docker
-  - |
-      if [[ -f ~/docker/flatpak-image ]]; then
-        (set -x; docker load -i ~/docker/flatpak-image)
-      else
-        (set -x;
-         docker pull flatpak/flatpak-builder:gnome-3-28;
-         docker save -o ~/docker/flatpak-image flatpak/flatpak-builder:gnome-3-28)
-      fi
+  - docker pull flatpak/flatpak-builder:gnome-3-28
 
 script:
   - env | grep 'TRAVIS\|encrypted' > travis.env
