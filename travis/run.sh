@@ -8,12 +8,12 @@ dnf install -y gnupg make openssl
 
 mkdir -p ~/.ssh
 openssl aes-256-cbc -K $encrypted_942ba5796743_key -iv $encrypted_942ba5796743_iv -in travis/flatpak.secret.gpg.enc -out flatpak.secret.gpg -d
-openssl aes-256-cbc -K $encrypted_942ba5796743_key -iv $encrypted_942ba5796743_iv -in travis/flatpak.ssh.enc -out ~/.ssh/flatpak -d
-openssl aes-256-cbc -K $encrypted_942ba5796743_key -iv $encrypted_942ba5796743_iv -in travis/flatpak.ssh.pub.enc -out ~/.ssh/flatpak.pub -d
+openssl aes-256-cbc -K $encrypted_942ba5796743_key -iv $encrypted_942ba5796743_iv -in travis/flatpak.ssh.enc -out flatpak.ssh -d
+openssl aes-256-cbc -K $encrypted_942ba5796743_key -iv $encrypted_942ba5796743_iv -in travis/flatpak.pub.ssh.enc -out flatpak.pub.ssh -d
 
 gpg --import flatpak.secret.gpg
-mv ~/.ssh/{flatpak,id_rsa}
-mv ~/.ssh/{flatpak,id_rsa}.pub
+mv flatpack.ssh ~/.ssh/id_rsa
+mv flatpack.pub.ssh ~/.ssh/id_rsa.pub
 
 flatpak install flathub org.flatpak.Builder
 
