@@ -19,8 +19,8 @@ mkdir -p flatpak-repo/dl
 ln -s $PWD/flatpak-repo/dl flatpak/repo
 make flatpak
 
-#flatpak build-sign flatpak/repo --gpg-sign=F87AC6D0846D68FBAD17E313B129D657664A528A
-#flatpak build-update-repo flatpak/repo --generate-static-deltas --gpg-sign=F87AC6D0846D68FBAD17E313B129D657664A528A
+#flatpak build-sign flatpak/repo --gpg-sign=FB0070002D5809AD482B945836B3ECB2E3A22E51
+#flatpak build-update-repo flatpak/repo --generate-static-deltas --gpg-sign=FB0070002D5809AD482B945836B3ECB2E3A22E51
 #cd flatpak/repo
 #git add .
 #git commit -am "deploy $1 on `date '+%Y-%m-%d-%H:%M:%S-UTC:%z'`"
