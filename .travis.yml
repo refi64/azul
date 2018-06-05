@@ -7,6 +7,7 @@ language: generic
 before_script:
   - mkdir -p ~/docker
   - |
+      ls ~/docker
       if [[ -f ~/docker/flatpak.tgz ]]; then
         set -x
         docker load -i ~/docker/flatpak.tgz
