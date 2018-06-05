@@ -1,6 +1,7 @@
 .PHONY: flatpak sdist
 
-all: flatpak
+# azul.yaml should be remade each time, just in case
+all: flatpak flatpak/azul.yaml
 
 flatpak/requirements.json:
 	cat requirements.txt | xargs flatpak-pip-generator --output $@
@@ -8,7 +9,7 @@ flatpak/requirements.json:
 
 sdist:
 	rm -rf dist
-	python setup.py sdist
+	python3 setup.py sdist
 
 flatpak/azul.yaml: sdist
 	echo 'name: azul' > $@

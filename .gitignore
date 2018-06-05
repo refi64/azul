@@ -2,5 +2,6 @@ misc/gschemas.compiled
 .flatpak-builder/
 flatpak/repo/
 flatpak/root/
+flatpak/azul.yaml
 dist/
 azul.egg-info/
