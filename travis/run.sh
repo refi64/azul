@@ -6,6 +6,7 @@ cd /workspace
 
 dnf install -y gnupg make openssl
 
+mkdir -p ~/.ssh
 openssl aes-256-cbc -K $encrypted_942ba5796743_key -iv $encrypted_942ba5796743_iv -in travis/flatpak.secret.gpg.enc -out flatpak.secret.gpg -d
 openssl aes-256-cbc -K $encrypted_942ba5796743_key -iv $encrypted_942ba5796743_iv -in travis/flatpak.ssh.enc -out ~/.ssh/flatpak -d
 openssl aes-256-cbc -K $encrypted_942ba5796743_key -iv $encrypted_942ba5796743_iv -in travis/flatpak.ssh.pub.enc -out ~/.ssh/flatpak.pub -d
