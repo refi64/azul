@@ -1,5 +1,9 @@
 #!/usr/bin/bash
 
+set -ex
+
+cd /workspace
+
 dnf install -y gnupg make openssl
 
 openssl aes-256-cbc -K $encrypted_942ba5796743_key -iv $encrypted_942ba5796743_iv -in travis/flatpak.secret.gpg.enc -out flatpak.secret.gpg -d
@@ -9,11 +13,9 @@ gpg --import flatpak.secret.gpg
 
 flatpak install flathub org.flatpak.Builder
 
-# echo "$GPG_KEY" | base64 -d | gpg --import
-# echo "$SSH_PUB_KEY" | base64 -d > ~/.ssh/id_rsa.pub
-# echo "$SSH_KEY" | base64 -d > ~/.ssh/id_rsa
-
-# git clone git@github.com:kirbyfan64/flatpak flatpak/repo
+git clone git@github.com:kirbyfan64/flatpak flatpak-repo
+mkdir -p flatpak-repo/dl
+ln -s $PWD/flatpak-repo/dl flatpak/repo
 make flatpak FLATPAK_BUILDER='flatpak run org.flatpak.Builder'
 
 #flatpak build-sign flatpak/repo --gpg-sign=F87AC6D0846D68FBAD17E313B129D657664A528A
