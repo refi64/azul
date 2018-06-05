@@ -9,12 +9,11 @@ before_script:
   - |
       ls ~/docker
       if [[ -f ~/docker/flatpak.tgz ]]; then
-        set -x
-        docker load -i ~/docker/flatpak.tgz
+        (set -x; zcat ~/docker/flatpak.tgz | docker load)
       else
-        set -x
-        docker pull flatpak/flatpak-builder:gnome-3-28
-        docker save flatpak/flatpak-builder:gnome-3-28 | gzip -c > ~/docker/flatpak.tgz
+        (set -x;
+         docker pull flatpak/flatpak-builder:gnome-3-28;
+         docker save flatpak/flatpak-builder:gnome-3-28 | gzip -c > ~/docker/flatpak.tgz)
       fi
 
 script:
