@@ -5,22 +5,19 @@ set -ex
 cd /workspace
 
 dnf install -y gnupg make openssl
+dnf update -y flatpak
 
 mkdir -p ~/.ssh
-openssl aes-256-cbc -K $encrypted_942ba5796743_key -iv $encrypted_942ba5796743_iv -in travis/flatpak.secret.gpg.enc -out flatpak.secret.gpg -d
-openssl aes-256-cbc -K $encrypted_942ba5796743_key -iv $encrypted_942ba5796743_iv -in travis/flatpak.ssh.enc -out flatpak.ssh -d
-openssl aes-256-cbc -K $encrypted_942ba5796743_key -iv $encrypted_942ba5796743_iv -in travis/flatpak.pub.ssh.enc -out flatpak.pub.ssh -d
+openssl aes-256-cbc -K $encrypted_942ba5796743_key -iv $encrypted_942ba5796743_iv -in flatpak/secrets.tar.enc -out secrets.tar -d
+tar xf secrets.tar
 
-gpg --import flatpak.secret.gpg
-mv flatpack.ssh ~/.ssh/id_rsa
-mv flatpack.pub.ssh ~/.ssh/id_rsa.pub
-
-flatpak install flathub org.flatpak.Builder
+gpg --import secret.gpg
+mv id_rsa* ~/.ssh
 
 git clone git@github.com:kirbyfan64/flatpak flatpak-repo
 mkdir -p flatpak-repo/dl
 ln -s $PWD/flatpak-repo/dl flatpak/repo
-make flatpak FLATPAK_BUILDER='flatpak run org.flatpak.Builder'
+make flatpak
 
 #flatpak build-sign flatpak/repo --gpg-sign=F87AC6D0846D68FBAD17E313B129D657664A528A
 #flatpak build-update-repo flatpak/repo --generate-static-deltas --gpg-sign=F87AC6D0846D68FBAD17E313B129D657664A528A
