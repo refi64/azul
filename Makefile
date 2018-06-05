@@ -1,3 +1,8 @@
+FLATPAK_BUILDER=flatpak-builder
+PYTHON=python3
+INKSCAPE=inkscape
+MAGICK=magick
+
 .PHONY: flatpak sdist
 
 # azul.yaml should be remade each time, just in case
@@ -9,7 +14,7 @@ flatpak/requirements.json:
 
 sdist:
 	rm -rf dist
-	python3 setup.py sdist
+	$(PYTHON) setup.py sdist
 
 flatpak/azul.yaml: sdist
 	echo 'name: azul' > $@
@@ -21,18 +26,18 @@ flatpak/azul.yaml: sdist
 	echo '    sha256: '`sha256sum dist/azul*.tar.gz | awk '{print $$1}'` >> $@
 
 flatpak: flatpak/requirements.json flatpak/azul.yaml
-	cd flatpak; flatpak-builder --repo=repo --force-clean root com.refi64.Azul.yaml
+	cd flatpak; $(FLATPAK_BUILDER) --repo=repo --force-clean root com.refi64.Azul.yaml
 
 icon:
 	@rm -rf misc/icons
 	@mkdir -p misc/icons
-	inkscape -z misc/icon.svg -e misc/icons/full.png
+	$(INKSCAPE) -z misc/icon.svg -e misc/icons/full.png
 	@set -e; for size in 16 22 24 32 48 64 128 256; do \
 		radius=`expr $$size / 2`; \
 		mkdir -p misc/icons/$${size}x$$size; \
 		( \
 			set -x; \
-			magick misc/icons/full.png -resize $${size}x$${size} \
+			$(MAGICK) misc/icons/full.png -resize $${size}x$${size} \
 				\(  -size $${size}x$$size xc:none -fill white \
 					-draw "circle $$radius,$$radius $$radius,0" -alpha copy \) \
 				-compose copy_opacity -composite \

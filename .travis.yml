@@ -8,8 +8,10 @@ before_script:
   - mkdir -p ~/docker
   - |
       if [[ -f ~/docker/flatpak.tgz ]]; then
+        set -x
         docker load -i ~/docker/flatpak.tgz
       else
+        set -x
         docker pull flatpak/flatpak-builder:gnome-3-28
         docker save flatpak/flatpak-builder:gnome-3-28 | gzip -c > ~/docker/flatpak.tgz
       fi
@@ -24,6 +26,3 @@ script:
 cache:
   directories:
     - ~/docker
-
-env:
-  global:
