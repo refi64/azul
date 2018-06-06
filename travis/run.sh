@@ -2,6 +2,9 @@
 
 set -ex
 
+git config --global user.email 'rymg19@gmail.com'
+git config --global user.name 'Ryan Gonzalez'
+
 cd /workspace
 
 dnf install -y gnupg make openssl
