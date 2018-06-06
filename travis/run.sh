@@ -20,10 +20,9 @@ gpg --import secret.gpg
 mv id_rsa* ~/.ssh
 
 git clone git@github.com:kirbyfan64/flatpak flatpak-repo
-mkdir -p flatpak-repo/dl
+mkdir -p flatpak-repo/dl/refs/remotes
 make flatpak FLATPAK_REPO=$PWD/flatpak-repo/dl
 
-mkdir -p flatpak-repo/dl/refs/remotes
 flatpak build-sign flatpak-repo/dl --gpg-sign=FB0070002D5809AD482B945836B3ECB2E3A22E51
 flatpak build-update-repo flatpak-repo/dl --generate-static-deltas --gpg-sign=FB0070002D5809AD482B945836B3ECB2E3A22E51
 cd flatpak-repo/
