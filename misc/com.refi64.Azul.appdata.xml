@@ -11,13 +11,12 @@
     already connect to servers, read and search messages, and send new messages.
    </p>
   </description>
-  <screenshots>
-    <screenshot type="default">
-      <image width="1048" height="480">
-        http://howl.io/images/screenshots/monokai/buffer-replace.png
-      </image>
-    </screenshot>
-  </screenshots>
+  <!-- <screenshots> -->
+  <!--   <screenshot type="default"> -->
+  <!--     <image width="1048" height="480"> -->
+  <!--     </image> -->
+  <!--   </screenshot> -->
+  <!-- </screenshots> -->
   <url type="homepage">https://github.com/kirbyfan64/azul</url>
   <updatecontact>rymg19@gmail.com</updatecontact>
 </component>

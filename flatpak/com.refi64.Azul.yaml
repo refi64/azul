@@ -5,7 +5,7 @@ sdk: org.gnome.Sdk
 command: /app/bin/azul.sh
 tags: [nightly]
 desktop-file-name-prefix: '(Nightly) '
-rename-appdata-file: com.refi64.Azul
+rename-appdata-file: com.refi64.Azul.appdata.xml
 rename-desktop-file: com.refi64.Azul.desktop
 rename-icon: com.refi64.Azul
 finish-args:
